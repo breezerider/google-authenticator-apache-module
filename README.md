@@ -1,8 +1,82 @@
-# GoogleAuthApache - Module to implement Two-Factor-Authentication in Apache2
+# Apache2 Module implementing Two-Factor-Authentication 
 
-BUILDING:
+Implementation follows the [Google Authenticator open source standard](https://github.com/google/google-authenticator).
 
-You have to have the Apache development environment on your system. This uses the "apxs" script, which should be built and installed as a part of the Apache development environment.
+## Build
+
+### Debian Linux and its derivative distributions
+
+1. Install build dependencies:
+
+```
+apt-get install apache2-dev
+```
+
+2. Checkout the repository and enter its root directory:
+
+```
+git clone https://github.com/breezerider/google-authenticator-apache-module.git
+cd google-authenticator-apache-module
+```
+
+3. Build using [`make`](https://www.gnu.org/software/make/) to build the package:
+
+```
+make
+make install
+```
+
+4. Extend you existing site configuration with setting for basic or digest authetication:
+
+```
+<VirtualHost ...>
+
+<Directory "/path/to/protected/content/">
+...
+# TOTP authentication using basic authentication
+AuthType Basic
+AuthName "My Test" 
+AuthBasicProvider "google_authenticator"
+
+# Or
+
+# TOTP authentication using digest authentication
+AuthType Digest 
+AuthName "My Test"
+AuthDigestDomain /private/ http://mirror.example.com/private2/ 
+AuthDigestProvider "google_authenticator"
+
+# TOTP authenticator settings
+Require valid-user 
+TOTPAuthTokenDir "/path/to/google_autheticator" # must readable to user running Apache service
+TOTPAuthStateDir "/path/to/state" # must readable and writable to user running Apache service
+TOTPAuthCookieExpires 3600 # optional, default 0
+TOTPAuthTolerance 2 # optional, default 1
+
+</Directory>
+
+</VirtualHost>
+```
+
+5. Enable the `google-authenticator-apache-module`:
+
+```
+a2enmod google_authenticator
+```
+
+6. Check configuration:
+
+```
+apachectl configtest
+```
+
+7. If everything checks out, then restart the Apache service:
+
+```
+apachectl restart
+```
+
+## OLD README
 
 LIMITATIONS:
 
