@@ -1,11 +1,16 @@
 APXS=apxs
-SOURCE=mod_authn_google.c base32.c hmac.c sha1.c
-.FORCE: all
+SOURCE= \
+  include/base32.c \
+  include/hmac.c \
+  include/sha1.c \
+  mod_authn_google.c
+
+.PHONY: all
 all: $(SOURCE)
-	$(APXS) -c $^
+	$(APXS) -I./include -c $^
 
 install: all
-	 sudo cp .libs/mod_authn_google.so /usr/lib/apache2/modules/
+	sudo cp .libs/mod_totp_authenticator.so /usr/lib/apache2/modules/
 
 clean:
 	rm -rf .libs/ *.o *.so *.la *.slo *.lo
