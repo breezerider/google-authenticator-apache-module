@@ -3,7 +3,7 @@ SOURCE= \
   include/base32.c \
   include/hmac.c \
   include/sha1.c \
-  mod_authn_google.c
+  mod_totp_authenticator.c
 
 .PHONY: all
 all: $(SOURCE)
