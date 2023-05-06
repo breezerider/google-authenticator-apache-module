@@ -1,9 +1,9 @@
 APXS=apxs
 SOURCE= \
+  mod_totp_authenticator.c \
   include/base32.c \
   include/hmac.c \
-  include/sha1.c \
-  mod_totp_authenticator.c
+  include/sha1.c 
 
 .PHONY: all
 all: $(SOURCE)
