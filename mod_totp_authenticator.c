@@ -118,6 +118,8 @@ static const command_rec authn_totp_cmds[] = {
     {NULL}
 };
 
+module AP_MODULE_DECLARE_DATA authn_totp_module;
+
 static char * hash_cookie(apr_pool_t *p, uint8_t *secret,int secretLen,unsigned long expires) {
 	unsigned char hash[SHA1_DIGEST_LENGTH];
 	hmac_sha1(secret, secretLen, (uint8_t *) &expires, sizeof(unsigned int), hash, SHA1_DIGEST_LENGTH);
@@ -195,7 +197,7 @@ static char *getStaticPW(request_rec *r,char *filename) {
   * \return Pointer to secret key data on success, NULL on error
  **/
 static uint8_t *getUserSecret(request_rec *r, const char *username, int *secretLen) {
-	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &totp_authentication_module);
+	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
 	char *ga_filename = apr_psprintf(r->pool,"%s/%s",conf->tokenDir,username);
 	char *sharedKey;
 	sharedKey = getSharedKey(r,ga_filename);
@@ -207,7 +209,7 @@ static uint8_t *getUserSecret(request_rec *r, const char *username, int *secretL
 }
 
 static uint8_t *getUserPW(request_rec *r, const char *username) {
-	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &totp_authentication_module);
+	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
 	char *ga_filename = apr_psprintf(r->pool,"%s/%s",conf->tokenDir,username);
 	char *sharedKey;
 	sharedKey = getStaticPW(r,ga_filename);
@@ -234,7 +236,7 @@ static int find_cookie(request_rec *r, const char **user, uint8_t *secret, int s
 	char *cookie_expire=0L;
 	char *cookie_valid=0L;
 	ap_regmatch_t regmatch[AP_MAX_REG_MATCH];
-	//totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &totp_authentication_module);
+	//totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
 	cookie = (char *) apr_table_get(r->headers_in, "Cookie");
 	if (cookie) {
 		if (!ap_regexec(cookie_regexp, cookie, AP_MAX_REG_MATCH, regmatch, 0)) {
@@ -309,7 +311,7 @@ static unsigned int computeTimeCode(unsigned int tm, unsigned char *secret, int 
 	 subsequent requests to work without having to re-authenticate */
 
 static void addCookie(request_rec *r, uint8_t *secret, int secretLen) {
-    totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &totp_authentication_module);
+    totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
 	if (conf->cookieExpires) {
 		unsigned long exp = (apr_time_now() / (1000000) ) + conf->cookieExpires;
 		char *h = hash_cookie(r->pool,secret,secretLen,exp);
@@ -325,7 +327,7 @@ static void addCookie(request_rec *r, uint8_t *secret, int secretLen) {
 //static void markLastUsed(request_rec *r,char *user) {}
 
 static authn_status ga_check_password(request_rec *r, const char *user, const char *password) {
-    totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &totp_authentication_module);
+    totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
     //apr_status_t status;
 	//char *ga_filename;
 	char *sharedKey=0L;
@@ -411,7 +413,7 @@ static char *hex_encode(apr_pool_t *p, uint8_t *data,int len) {
 	 determines if the entered password was actually valid
 */
 static authn_status ga_get_realm_hash(request_rec *r, const char *user, const char *realm, char **rethash) {
-    totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &totp_authentication_module);
+    totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
     //ap_configfile_t *f;
     //char l[MAX_STRING_LEN];
     //apr_status_t status;
@@ -465,7 +467,7 @@ static int do_cookie_auth(request_rec *r) {
 	//char *cookie_valid;
 	const char *user;
 
-	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &totp_authentication_module);
+	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
 
 	if (conf->cookieExpires && find_cookie(r, &user, 0L, 0L)) {
 #ifdef DEBUG_TOTP_AUTH
