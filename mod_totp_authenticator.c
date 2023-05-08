@@ -54,7 +54,6 @@ ap_regex_t *cookie_regexp;
 typedef struct {
 	char *tokenDir;
     char *stateDir;
-    unsigned int cookieExpires;
     char tolerance;
 } totp_auth_config_rec;
 
@@ -63,22 +62,24 @@ static unsigned int get_timestamp() {
 	apr_time_t apr_time = apr_time_now();
 	apr_time /= 1000000;
 	apr_time /= 30;
-//	int unix_time =  time(0L)/30;
-//	printf ("APR time is %lu unix time is %d\n",apr_time,unix_time);
+
 	return (apr_time);
 }
 
-static uint8_t *get_shared_secret( request_rec *r, const char *buf, int *secretLen) {
+static uint8_t *get_shared_secret(request_rec *r, const char *buf, int *secretLen) {
   // Decode secret key
   int base32Len = strlen(buf);
   *secretLen = (base32Len*5 + 7)/8;
+
   unsigned char *secret = apr_palloc(r->pool,base32Len + 1);
   memcpy(secret, buf, base32Len);
   secret[base32Len] = '\000';
+
   if ((*secretLen = base32_decode(secret, secret, base32Len)) < 1) {
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 			"Could not find a valid BASE32 encoded secret");
     memset(secret, 0, base32Len);
+
     return NULL;
   }
   memset(secret + *secretLen, 0, base32Len + 1 - *secretLen);
@@ -89,8 +90,8 @@ static void *create_authn_totp_config(apr_pool_t *p, char *d) {
     totp_auth_config_rec *conf = apr_palloc(p, sizeof(*conf));
     conf->tokenDir = NULL;
     conf->stateDir = NULL;
-    conf->cookieExpires=0;
     conf->tolerance=1;
+
     return conf;
 }
 
@@ -109,9 +110,6 @@ static const command_rec authn_totp_cmds[] = {
     AP_INIT_TAKE1("TOTPAuthStateDir", set_totp_auth_config_path,
                    (void *)APR_OFFSETOF(totp_auth_config_rec, stateDir),
                    OR_AUTHCFG, "Directory that contains TOTP key state information"),
-    AP_INIT_TAKE1("TOTPAuthCookieExpires", set_totp_auth_config_int,
-                   (void *)APR_OFFSETOF(totp_auth_config_rec, cookieExpires),
-                   OR_AUTHCFG, "Authentication cookie expiration time in seconds"),
     AP_INIT_TAKE1("TOTPAuthTolerance", set_totp_auth_config_int,
                    (void *)APR_OFFSETOF(totp_auth_config_rec, tolerance),
                    OR_AUTHCFG, "Clock Tolerance (in number of past and future OTP that are accepted)"),
@@ -119,15 +117,6 @@ static const command_rec authn_totp_cmds[] = {
 };
 
 module AP_MODULE_DECLARE_DATA authn_totp_module;
-
-static char * hash_cookie(apr_pool_t *p, uint8_t *secret,int secretLen,unsigned long expires) {
-	unsigned char hash[SHA1_DIGEST_LENGTH];
-	hmac_sha1(secret, secretLen, (uint8_t *) &expires, sizeof(unsigned int), hash, SHA1_DIGEST_LENGTH);
-	int len;
-	char *encoded = apr_palloc(p,(SHA1_DIGEST_LENGTH*2)+3);
-	len = apr_base64_encode_binary(encoded,hash,SHA1_DIGEST_LENGTH);
-	return encoded;
-}
 
 static char *getSharedKey(request_rec *r, char *filename) {
     char line[MAX_STRING_LEN];
@@ -219,71 +208,6 @@ static uint8_t *getUserPW(request_rec *r, const char *username) {
 	return sharedKey;
 }
 
-
-/**
-  * \brief find_cookie
-  * \param r
-  * \param user If not null, will return username here
-  * \param secret Secret key to hash
-  * \param secretLen
-  * \return  Zero if not found or invalid, 1 if found valid cookie
-	* If secret key is NULL, function will extract username, and look
-	* up sercret key based on this username.
- **/
-
-static int find_cookie(request_rec *r, const char **user, uint8_t *secret, int secretLen) {
-	char *cookie=0L;
-	char *cookie_expire=0L;
-	char *cookie_valid=0L;
-	ap_regmatch_t regmatch[AP_MAX_REG_MATCH];
-	//totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
-	cookie = (char *) apr_table_get(r->headers_in, "Cookie");
-	if (cookie) {
-		if (!ap_regexec(cookie_regexp, cookie, AP_MAX_REG_MATCH, regmatch, 0)) {
-			if (user) *user  = ap_pregsub(r->pool, "$1", cookie,AP_MAX_REG_MATCH,regmatch);
-			cookie_expire = ap_pregsub(r->pool, "$2", cookie,AP_MAX_REG_MATCH,regmatch);
-			cookie_valid = ap_pregsub(r->pool, "$3", cookie,AP_MAX_REG_MATCH,regmatch);
-			if ((!cookie_valid) || (!cookie_expire)) {
-				if (user) *user  = ap_pregsub(r->pool, "$4", cookie,AP_MAX_REG_MATCH,regmatch);
-				cookie_expire = ap_pregsub(r->pool, "$5", cookie,AP_MAX_REG_MATCH,regmatch);
-				cookie_valid = ap_pregsub(r->pool, "$6", cookie,AP_MAX_REG_MATCH,regmatch);
-			}
-				
-#ifdef DEBUG_TOTP_AUTH
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Found cookie Expires \"%s\" Valid \"%s\"",cookie_expire,cookie_valid);
-#endif
-				if (cookie_expire && cookie_valid && *user) {
-					long unsigned int exp = apr_atoi64(cookie_expire);
-					long unsigned int now = apr_time_now()/1000000;
-					if (exp < now) {
-#ifdef DEBUG_TOTP_AUTH
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Expired. Now=%lu Expire=%lu\n",now,exp);
-#endif
-						return 0;	/* Expired */
-					}
-					if (!secret) {
-						secret = getUserSecret(r,*user,&secretLen);
-					}
-					char *h = hash_cookie(r->pool,secret,secretLen,exp);
-#ifdef DEBUG_TOTP_AUTH
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "Match cookie \"%s\" vs  \"%s\"",h,cookie_valid);
-#endif
-					if (apr_strnatcmp(h,cookie_valid)==0)
-						return 1; /* Valid Cookie */
-					else {
-#ifdef DEBUG_TOTP_AUTH
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "MISMATCHED  cookie \"%s\" vs  \"%s\"",h,cookie_valid);
-#endif
-						return 0; /* Mismatched */
-					}
-				}
-		}
-	}
-	return 0;	/* Not found */
-}
-
 static unsigned int computeTimeCode(unsigned int tm, unsigned char *secret, int secretLen) {
 	unsigned char hash[SHA1_DIGEST_LENGTH];
 	unsigned long chlg = tm ;
@@ -305,28 +229,10 @@ static unsigned int computeTimeCode(unsigned int tm, unsigned char *secret, int 
 	return truncatedHash;
 }
 
-
-/* Create and add an authentication cookie to the request,
-	 if we have been configured to do so. This will allow 
-	 subsequent requests to work without having to re-authenticate */
-
-static void addCookie(request_rec *r, uint8_t *secret, int secretLen) {
-    totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
-	if (conf->cookieExpires) {
-		unsigned long exp = (apr_time_now() / (1000000) ) + conf->cookieExpires;
-		char *h = hash_cookie(r->pool,secret,secretLen,exp);
-		char * cookie = apr_psprintf(r->pool,"totp_authn=%s:%lu:%s",r->user,exp,h);
-#ifdef DEBUG_TOTP_AUTH
-	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Created cookie expires %lu (time = %d) hash is %s Cookie: %s", exp, conf->cookieExpires, h, cookie);
-#endif
-		apr_table_addn(r->headers_out, "Set-Cookie", cookie);
-	}
-}
-
 /* Mark a file with the last used time  - do disallow reuse */
 //static void markLastUsed(request_rec *r,char *user) {}
 
-static authn_status ga_check_password(request_rec *r, const char *user, const char *password) {
+static authn_status authn_totp_check_password(request_rec *r, const char *user, const char *password) {
     totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
     //apr_status_t status;
 	//char *ga_filename;
@@ -382,7 +288,6 @@ static authn_status ga_check_password(request_rec *r, const char *user, const ch
 
 		if (truncatedHash == (unsigned int)code) {
 			/**\todo  - check to see if time-based code has been invalidated */
-			addCookie(r,secret,secretLen);
 			return AUTH_GRANTED;
 		}
 	}
@@ -412,7 +317,7 @@ static char *hex_encode(apr_pool_t *p, uint8_t *data,int len) {
    User, Realm and (Required) Password. Caller (Digest module)
 	 determines if the entered password was actually valid
 */
-static authn_status ga_get_realm_hash(request_rec *r, const char *user, const char *realm, char **rethash) {
+static authn_status authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm, char **rethash) {
     totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
     //ap_configfile_t *f;
     //char l[MAX_STRING_LEN];
@@ -447,49 +352,13 @@ static authn_status ga_get_realm_hash(request_rec *r, const char *user, const ch
 
 	apr_md5(hash ,hashstr,strlen(hashstr));
 	*rethash = hex_encode(r->pool,hash,APR_MD5_DIGESTSIZE);
-	addCookie(r,secret,secretLen);
+
     return AUTH_USER_FOUND;
 }
 
-
-	/***
-	 *** Check for Valid
-	 *** Authentication Cookie
-	 ***/
-
-static int do_cookie_auth(request_rec *r) {
-
-#ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "**** COOKIE AUTH at  T=%lu",apr_time_now()/1000000);
-#endif
-
-	//unsigned int cookie_expires;
-	//char *cookie_valid;
-	const char *user;
-
-	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
-
-	if (conf->cookieExpires && find_cookie(r, &user, 0L, 0L)) {
-#ifdef DEBUG_TOTP_AUTH
-    	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "User %s auth granted from cookie",user);
-#endif
-		r->user = (char *) user;
-		r->ap_auth_type = "Cookie";
-		return OK;
-	}
-	return DECLINED;	/* Let someone else deal with it */
-}
-
-static void ga_child_init (apr_pool_t *p, server_rec *s) {
-	cookie_regexp = ap_pregcomp(p, "^totp_authn=([^;,]+):([^;,]+):([^;,]+)|[;,][ \t]*totp_authn=([^;,]+):([^;,]+):([^;,]+)", AP_REG_EXTENDED);
-}
-
-static const authn_provider authn_totp_provider = {&ga_check_password, &ga_get_realm_hash};
+static const authn_provider authn_totp_provider = {&authn_totp_check_password, &authn_totp_get_realm_hash};
 
 static void register_hooks(apr_pool_t *p) {
-	static const char * const parsePre[]={ "mod_auth_digest.c", NULL };
-	ap_hook_child_init(ga_child_init, 0L, 0L, APR_HOOK_FIRST);
-	ap_hook_check_user_id(do_cookie_auth, 0L, parsePre, APR_HOOK_FIRST);
 	ap_register_auth_provider(p, AUTHN_PROVIDER_GROUP, "totp", AUTHN_PROVIDER_VERSION, &authn_totp_provider, AP_AUTH_INTERNAL_PER_CONF);
 }
 
