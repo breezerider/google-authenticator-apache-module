@@ -53,9 +53,9 @@ ap_regex_t *cookie_regexp;
 
 typedef struct {
 	char *tokenDir;
-	char *stateDir;
-	unsigned int cookieExpires;
-	char tolerance;
+    char *stateDir;
+    unsigned int cookieExpires;
+    char tolerance;
 } totp_auth_config_rec;
 
 
@@ -85,12 +85,12 @@ static uint8_t *get_shared_secret( request_rec *r, const char *buf, int *secretL
   return secret;
 }
 
-static void *create_totp_auth_config(apr_pool_t *p, char *d) {
+static void *create_authn_totp_config(apr_pool_t *p, char *d) {
     totp_auth_config_rec *conf = apr_palloc(p, sizeof(*conf));
     conf->tokenDir = NULL;
-	conf->stateDir = NULL;
-	conf->cookieExpires=0;
-	conf->tolerance=1;
+    conf->stateDir = NULL;
+    conf->cookieExpires=0;
+    conf->tolerance=1;
     return conf;
 }
 
@@ -102,7 +102,7 @@ static const char *set_totp_auth_config_int(cmd_parms *cmd, void *offset, const 
     return ap_set_int_slot(cmd, offset, value);
 }
 
-static const command_rec authn_google_cmds[] = {
+static const command_rec authn_totp_cmds[] = {
     AP_INIT_TAKE1("TOTPAuthTokenDir", set_totp_auth_config_path,
                    (void *)APR_OFFSETOF(totp_auth_config_rec, tokenDir),
                    OR_AUTHCFG, "Directory containing Google Authenticator credential files"),
@@ -117,8 +117,6 @@ static const command_rec authn_google_cmds[] = {
                    OR_AUTHCFG, "Clock Tolerance (in number of past and future OTP that are accepted)"),
     {NULL}
 };
-
-module AP_MODULE_DECLARE_DATA totp_authentication_module;
 
 static char * hash_cookie(apr_pool_t *p, uint8_t *secret,int secretLen,unsigned long expires) {
 	unsigned char hash[SHA1_DIGEST_LENGTH];
@@ -490,15 +488,16 @@ static void register_hooks(apr_pool_t *p) {
 	static const char * const parsePre[]={ "mod_auth_digest.c", NULL };
 	ap_hook_child_init(ga_child_init, 0L, 0L, APR_HOOK_FIRST);
 	ap_hook_check_user_id(do_cookie_auth, 0L, parsePre, APR_HOOK_FIRST);
-	ap_register_provider(p, AUTHN_PROVIDER_GROUP, "totp_authenticator", "0", &authn_totp_provider);
+	ap_register_auth_provider(p, AUTHN_PROVIDER_GROUP, "totp", AUTHN_PROVIDER_VERSION, &authn_totp_provider, AP_AUTH_INTERNAL_PER_CONF);
 }
 
-module AP_MODULE_DECLARE_DATA totp_authentication_module = {
+AP_DECLARE_MODULE(authn_totp) =
+{
     STANDARD20_MODULE_STUFF,
-    create_totp_auth_config,	/* dir config creater */
+    create_authn_totp_config,	/* dir config creater */
     NULL,							/* dir merger --- default is to override */
     NULL,							/* server config */
     NULL,							/* merge server config */
-    authn_google_cmds,				/* command apr_table_t */
+    authn_totp_cmds,				/* command apr_table_t */
     register_hooks					/* register hooks */
 };
