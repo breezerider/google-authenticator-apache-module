@@ -26,7 +26,8 @@
  */
 
 #include "apr_strings.h"
-#include "apr_md5.h"            /* for apr_password_validate */
+#include "apr_ctype.h"            /* for apr_isalnum */
+//#include "apr_md5.h"            /* for apr_password_validate */
 
 #include "ap_config.h"
 #include "ap_provider.h"
@@ -49,14 +50,7 @@
 
 #define DEBUG_TOTP_AUTH
 
-ap_regex_t *cookie_regexp;
-
-typedef struct {
-	char *tokenDir;
-    char *stateDir;
-    char tolerance;
-} totp_auth_config_rec;
-
+/* Helper functions */
 
 static unsigned int get_timestamp() {
 	apr_time_t apr_time = apr_time_now();
@@ -66,25 +60,46 @@ static unsigned int get_timestamp() {
 	return (apr_time);
 }
 
-static uint8_t *get_shared_secret(request_rec *r, const char *buf, int *secretLen) {
+static uint8_t *decode_shared_secret(request_rec *r, const char *buf, int *len) {
   // Decode secret key
   int base32Len = strlen(buf);
-  *secretLen = (base32Len*5 + 7)/8;
+  *len = (base32Len*5 + 7)/8;
 
   unsigned char *secret = apr_palloc(r->pool,base32Len + 1);
   memcpy(secret, buf, base32Len);
   secret[base32Len] = '\000';
 
-  if ((*secretLen = base32_decode(secret, secret, base32Len)) < 1) {
+  if ((*len = base32_decode(secret, secret, base32Len)) < 1) {
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 			"Could not find a valid BASE32 encoded secret");
     memset(secret, 0, base32Len);
 
     return NULL;
   }
-  memset(secret + *secretLen, 0, base32Len + 1 - *secretLen);
+  memset(secret + *len, 0, base32Len + 1 - *len);
   return secret;
 }
+
+static char *hex_encode(apr_pool_t *p, uint8_t *data,int len) {
+	const char *hex = "0123456789abcdef";
+	char *result = apr_palloc(p,(APR_MD5_DIGESTSIZE*2)+1);
+	int idx;
+	char *h = result;
+	for (idx=0; idx<APR_MD5_DIGESTSIZE; idx++) {
+		*h++ = hex[data[idx] >> 4];
+		*h++ = hex[data[idx] & 0xF];
+	}
+	*h=(char) 0;
+	return result;
+}
+
+/* Module configuration */
+
+typedef struct {
+	char *tokenDir;
+    char *stateDir;
+    char tolerance;
+} totp_auth_config_rec;
 
 static void *create_authn_totp_config(apr_pool_t *p, char *d) {
     totp_auth_config_rec *conf = apr_palloc(p, sizeof(*conf));
@@ -118,39 +133,9 @@ static const command_rec authn_totp_cmds[] = {
 
 module AP_MODULE_DECLARE_DATA authn_totp_module;
 
+/* Authentication Helpers */
+
 static char *getSharedKey(request_rec *r, char *filename) {
-    char line[MAX_STRING_LEN];
-	char *sharedKey = 0L;
-	apr_status_t status;
-    ap_configfile_t *f;
-
-    status = ap_pcfg_openfile(&f, r->pool, filename);
-
-    if (status != APR_SUCCESS) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-                      "getSharedKey: Could not open password file: %s", filename);
-        return 0L;
-    }
-
-    while (!(ap_cfg_getline(line, MAX_STRING_LEN, f))) {
-        /* Skip comment or blank lines. */
-        if ((line[0] == '"') || (!line[0])) {
-            continue;
-        }
-		if (!sharedKey) {
-			sharedKey = apr_pstrdup(r->pool,line);
-		}
-		/* Scratch codes to follow */
-    }
-    ap_cfg_closefile(f);
-#ifdef DEBUG_TOTP_AUTH
-	ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-					"SharedKey: %s", sharedKey);
-#endif
-	return sharedKey;
-}
-
-static char *getStaticPW(request_rec *r,char *filename) {
     char line[MAX_STRING_LEN];
 	char *sharedKey = 0L;
 	apr_status_t status;
@@ -160,52 +145,57 @@ static char *getStaticPW(request_rec *r,char *filename) {
 
     if (status != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-                      "getStaticPW: Could not open password file: %s", filename);
+                      "getSharedKey: Could not open password file: %s", filename);
         return 0L;
     }
 
     while (!(ap_cfg_getline(line, MAX_STRING_LEN, file))) {
-		if (0 == strncmp(line, "\"PASSWORD=", 11)) {
-            sharedKey = apr_pstrdup(r->pool,&line[11]);
-			break; /* take the first occurence */
+        /* Skip comment or blank lines. */
+        if ((line[0] == '"') || (!line[0])) {
+            continue;
         }
+		/* Shared key is on the first valid line */
+		if (!sharedKey) {
+			sharedKey = apr_pstrdup(r->pool,line);
+			/* TODO Remove when scatch code handling is implemented */
+			break;
+		} 
+		else 
+		{
+		  /* Handle scratch codes */
+		  /* TODO */
+		}
     }
     ap_cfg_closefile(file);
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-					"StaticPW: %s", sharedKey);
+					"SharedKey: %s", sharedKey);
 #endif
 	return sharedKey;
 }
 
 /**
-  * \brief getUserSecret Based on the given username, get the users secret key 
+  * \brief get_user_shared_key Based on the given username, get the users secret key 
   * \param r Request
   * \param username Username
-  * \param secret Secret key returned here. Must be allocated by caller
-  * \return Pointer to secret key data on success, NULL on error
+  * \param len Length of the secret key (out). Must be allocated by the caller.
+  * \return Pointer to character array containt the secret key on success, NULL otherwise
  **/
-static uint8_t *getUserSecret(request_rec *r, const char *username, int *secretLen) {
-	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
-	char *ga_filename = apr_psprintf(r->pool,"%s/%s",conf->tokenDir,username);
-	char *sharedKey;
-	sharedKey = getSharedKey(r,ga_filename);
-	if (!sharedKey) {
-		return 0L;
-	}
-	uint8_t *secret = get_shared_secret(r,sharedKey,secretLen);
-	return secret;
-}
+static unsigned char *get_user_shared_key(request_rec *r, totp_auth_config_rec *conf, const char *username, int *len)
+{
+	/* validate user name */
+    char *tmp = username;
+	for(; *tmp; ++tmp)
+	  if(!apr_isalnum(*tmp))
+	    return 0L;
 
-static uint8_t *getUserPW(request_rec *r, const char *username) {
-	totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
-	char *ga_filename = apr_psprintf(r->pool,"%s/%s",conf->tokenDir,username);
-	char *sharedKey;
-	sharedKey = getStaticPW(r,ga_filename);
-	if (!sharedKey) {
+	char *token_filename = apr_psprintf(r->pool, "%s/%s", conf->tokenDir, username);
+	char *shared_key = read_shared_key(r, token_filename);
+	if (!shared_key)
 		return 0L;
-	}
-	return sharedKey;
+
+	unsigned char *secret = decode_shared_secret(r, shared_key, len);
+	return secret;
 }
 
 static unsigned int computeTimeCode(unsigned int tm, unsigned char *secret, int secretLen) {
@@ -232,86 +222,54 @@ static unsigned int computeTimeCode(unsigned int tm, unsigned char *secret, int 
 /* Mark a file with the last used time  - do disallow reuse */
 //static void markLastUsed(request_rec *r,char *user) {}
 
+/* Authentication Functions */
+
 static authn_status authn_totp_check_password(request_rec *r, const char *user, const char *password) {
     totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
-    //apr_status_t status;
-	//char *ga_filename;
-	char *sharedKey=0L;
-	char *userPW=0L;
-	int tm;
-	int pwLen;
-	int i;//,j;
+
+	unsigned char *shared_key=0L;
+	unsigned int tm;
+	int i;
 	unsigned int truncatedHash = 0;
 	
 #ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "**** PW AUTH at  T=%lu  user  \"%s\"",apr_time_now()/1000000,user);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "**** TOTP BASIC AUTH at  T=%lu  user  \"%s\"",apr_time_now()/1000000,user);
 #endif
 
 	int secretLen;
-	userPW = getUserPW(r,user);
-	if (userPW)
-		pwLen = strlen(userPW);
-	else
-		pwLen=0L;
+	shared_key = get_user_shared_key(r, conf, user, &secretLen);
 #ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "userPW length: %d",pwLen);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "secret key is \"%s\", secret length: %d", shared_key, secretLen);
 #endif
-	sharedKey = getUserSecret(r,user,&secretLen);
-	uint8_t *secret = sharedKey;
-	if (!secret) {
+	if (!shared_key) {
 		return AUTH_DENIED;
 	}
-	if (strncmp(userPW, password, pwLen)!=0) {
-		return AUTH_DENIED;
-	}
-	else {
-		password+=pwLen;
-	}
-
 
 	/***
-	 *** Perform Google Authentication
+	 *** Perform TOTP Authentication
 	 ***/
 	tm  = get_timestamp();
-
-#ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Secret Key is \"%s\" @ T=%d",sharedKey,tm);
-#endif
-
-	int code = (int) apr_atoi64(password);
-	for (i = -(conf->tolerance); i <= (conf->tolerance); ++i) {
-	truncatedHash = computeTimeCode(tm+i,secret,secretLen);
+	unsigned int code = (unsigned int) apr_atoi64(password);
+	for (i = -(conf->tolerance); i <= (conf->tolerance); ++i) 
+	{
+		truncatedHash = computeTimeCode(tm+i, shared_key, secretLen);
 	
 #ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Checking codes  @ T=%d \"%d\" vs.  \"%d\"",tm,truncatedHash,code);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Checking code @ T=%d expected=\"%d\" vs. input=\"%d\"",tm,truncatedHash,code);
 #endif
 
-		if (truncatedHash == (unsigned int)code) {
+		if (truncatedHash == code)
 			/**\todo  - check to see if time-based code has been invalidated */
 			return AUTH_GRANTED;
-		}
+
 	}
 
 #ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Validating for  \"%s\" Shared Key  \"%s\"",password,sharedKey);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Validating for  \"%s\" Shared Key  \"%s\"",password,shared_key);
 #endif
 
     return AUTH_DENIED;
 }
-
-static char *hex_encode(apr_pool_t *p, uint8_t *data,int len) {
-	const char *hex = "0123456789abcdef";
-	char *result = apr_palloc(p,(APR_MD5_DIGESTSIZE*2)+1);
-	int idx;
-	char *h = result;
-	for (idx=0; idx<APR_MD5_DIGESTSIZE; idx++) {
-		*h++ = hex[data[idx] >> 4];
-		*h++ = hex[data[idx] & 0xF];
-	}
-	*h=(char) 0;
-	return result;
-}
-
 
 /* This handles Digest Authentication. Returns a has of the 
    User, Realm and (Required) Password. Caller (Digest module)
@@ -319,42 +277,43 @@ static char *hex_encode(apr_pool_t *p, uint8_t *data,int len) {
 */
 static authn_status authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm, char **rethash) {
     totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
-    //ap_configfile_t *f;
-    //char l[MAX_STRING_LEN];
-    //apr_status_t status;
-    //char *file_hash = NULL;
-	char *sharedKey;
-	char *ga_filename;
+    
+	unsigned char *shared_key = 0L;
+	unsigned int shared_key_len = 0L;
 
 #ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "**** DIGEST AUTH at  T=%lu  user  \"%s\"", apr_time_now()/1000000, user);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "**** TOTP DIGEST AUTH at  T=%lu  user  \"%s\"", apr_time_now()/1000000, user);
 #endif
 
-	unsigned char *hash = apr_palloc(r->pool,APR_MD5_DIGESTSIZE);
+	shared_key = get_user_shared_key(r, conf, user, &shared_key_len);
+#ifdef DEBUG_TOTP_AUTH
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "secret key is \"%s\", secret length: %u", shared_key, shared_key_len);
+#endif
+	if (!shared_key) {
+		return AUTH_USER_NOT_FOUND;
+	}
 
-	ga_filename = apr_psprintf(r->pool,"%s/%s",conf->tokenDir,user);
+	unsigned char *hash = apr_palloc(r->pool, APR_MD5_DIGESTSIZE);
 
-	sharedKey = getSharedKey(r,ga_filename);
+    /* TODO Tolerance? */
+	unsigned int truncatedHash = computeTimeCode(get_timestamp(), shared_key, shared_key_len);
 
-	if (!sharedKey)
-    return AUTH_USER_NOT_FOUND;
-
-	int secretLen;
-	uint8_t *secret = get_shared_secret(r,sharedKey,&secretLen);
-
-	unsigned int truncatedHash = computeTimeCode(get_timestamp(),secret,secretLen);
 	char *pwstr = apr_psprintf(r->pool,"%6.6u",truncatedHash);
 	char *hashstr = apr_psprintf(r->pool,"%s:%s:%s",user,realm,pwstr);
 	
 #ifdef DEBUG_TOTP_AUTH
-	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Password \"%s\" at modulus %lu",pwstr,(apr_time_now() / 1000000) % 30);
+	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Password \"%s\" at modulus %lu", pwstr, (apr_time_now() / 1000000) % 30);
 #endif
 
-	apr_md5(hash ,hashstr,strlen(hashstr));
-	*rethash = hex_encode(r->pool,hash,APR_MD5_DIGESTSIZE);
+	apr_md5(hash , hashstr, strlen(hashstr));
+	*rethash = hex_encode(r->pool, hash, APR_MD5_DIGESTSIZE);
 
-    return AUTH_USER_FOUND;
+	/* TODO Authentication? */
+	return AUTH_DENIED;
+    //return AUTH_USER_FOUND;
 }
+
+/* Module Declaration */
 
 static const authn_provider authn_totp_provider = {&authn_totp_check_password, &authn_totp_get_realm_hash};
 
@@ -365,7 +324,7 @@ static void register_hooks(apr_pool_t *p) {
 AP_DECLARE_MODULE(authn_totp) =
 {
     STANDARD20_MODULE_STUFF,
-    create_authn_totp_config,	/* dir config creater */
+    create_authn_totp_config,	    /* dir config creater */
     NULL,							/* dir merger --- default is to override */
     NULL,							/* server config */
     NULL,							/* merge server config */
