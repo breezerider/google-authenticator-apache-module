@@ -26,8 +26,8 @@
  */
 
 #include "apr_strings.h"
-#include "apr_ctype.h"            /* for apr_isalnum */
-//#include "apr_md5.h"            /* for apr_password_validate */
+#include "apr_lib.h"            /* for apr_isalnum */
+#include "apr_md5.h"            /* for APR_MD5_DIGESTSIZE */
 
 #include "ap_config.h"
 #include "ap_provider.h"
@@ -135,7 +135,7 @@ module AP_MODULE_DECLARE_DATA authn_totp_module;
 
 /* Authentication Helpers */
 
-static char *getSharedKey(request_rec *r, char *filename) {
+static char *read_shared_key(request_rec *r, char *filename) {
     char line[MAX_STRING_LEN];
 	char *sharedKey = 0L;
 	apr_status_t status;
@@ -184,7 +184,7 @@ static char *getSharedKey(request_rec *r, char *filename) {
 static unsigned char *get_user_shared_key(request_rec *r, totp_auth_config_rec *conf, const char *username, int *len)
 {
 	/* validate user name */
-    char *tmp = username;
+    const char *tmp = username;
 	for(; *tmp; ++tmp)
 	  if(!apr_isalnum(*tmp))
 	    return 0L;
