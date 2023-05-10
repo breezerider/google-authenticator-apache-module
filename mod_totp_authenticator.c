@@ -145,7 +145,7 @@ static char *read_shared_key(request_rec *r, char *filename) {
 
     if (status != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-                      "getSharedKey: Could not open password file: %s", filename);
+                      "read_shared_key: Could not open password file: %s", filename);
         return 0L;
     }
 
@@ -198,25 +198,30 @@ static unsigned char *get_user_shared_key(request_rec *r, totp_auth_config_rec *
 	return secret;
 }
 
-static unsigned int computeTimeCode(unsigned int tm, unsigned char *secret, int secretLen) {
+static unsigned int generate_totp_code(unsigned int timestamp, unsigned char *secret, int len)
+{
 	unsigned char hash[SHA1_DIGEST_LENGTH];
-	unsigned long chlg = tm ;
+	unsigned long chlg = timestamp;
 	unsigned char challenge[8];
-	unsigned int truncatedHash = 0;
+	unsigned int totp_code = 0;
 	int j;
-	for (j = 8; j--; chlg >>= 8) {
+	int offset;
+
+	for (j = 8; j--; chlg >>= 8)
 		challenge[j] = chlg;
-	}
-	hmac_sha1(secret, secretLen, challenge, 8, hash, SHA1_DIGEST_LENGTH);
-	int offset = hash[SHA1_DIGEST_LENGTH - 1] & 0xF;
-	for (j = 0; j < 4; ++j) {
-		truncatedHash <<= 8;
-		truncatedHash  |= hash[offset + j];
+
+	hmac_sha1(secret, len, challenge, 8, hash, SHA1_DIGEST_LENGTH);
+	offset = hash[SHA1_DIGEST_LENGTH - 1] & 0xF;
+	for (j = 0; j < 4; ++j)
+	{
+		totp_code <<= 8;
+		totp_code  |= hash[offset + j];
 	}
 	memset(hash, 0, sizeof(hash));
-	truncatedHash &= 0x7FFFFFFF;
-	truncatedHash %= 1000000;
-	return truncatedHash;
+	totp_code &= 0x7FFFFFFF;
+	totp_code %= 1000000;
+
+	return totp_code;
 }
 
 /* Mark a file with the last used time  - do disallow reuse */
@@ -224,41 +229,41 @@ static unsigned int computeTimeCode(unsigned int tm, unsigned char *secret, int 
 
 /* Authentication Functions */
 
-static authn_status authn_totp_check_password(request_rec *r, const char *user, const char *password) {
+static authn_status authn_totp_check_password(request_rec *r, const char *user, const char *password)
+{
     totp_auth_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_totp_module);
 
 	unsigned char *shared_key=0L;
-	unsigned int tm;
+	unsigned int timestamp;
 	int i;
-	unsigned int truncatedHash = 0;
+	unsigned int len;
+	unsigned int totp_code = 0;
 	
 #ifdef DEBUG_TOTP_AUTH
     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "**** TOTP BASIC AUTH at  T=%lu  user  \"%s\"",apr_time_now()/1000000,user);
 #endif
 
-	int secretLen;
-	shared_key = get_user_shared_key(r, conf, user, &secretLen);
+	shared_key = get_user_shared_key(r, conf, user, &len);
 #ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "secret key is \"%s\", secret length: %d", shared_key, secretLen);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "secret key is \"%s\", secret length: %d", shared_key, len);
 #endif
-	if (!shared_key) {
+	if (!shared_key)
 		return AUTH_DENIED;
-	}
 
 	/***
 	 *** Perform TOTP Authentication
 	 ***/
-	tm  = get_timestamp();
+	timestamp  = get_timestamp();
 	unsigned int code = (unsigned int) apr_atoi64(password);
 	for (i = -(conf->tolerance); i <= (conf->tolerance); ++i) 
 	{
-		truncatedHash = computeTimeCode(tm+i, shared_key, secretLen);
+		totp_code = generate_totp_code(timestamp + i, shared_key, len);
 	
 #ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Checking code @ T=%d expected=\"%d\" vs. input=\"%d\"",tm,truncatedHash,code);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Checking code @ T=%d expected=\"%d\" vs. input=\"%d\"",timestamp,totp_code,code);
 #endif
 
-		if (truncatedHash == code)
+		if (totp_code == code)
 			/**\todo  - check to see if time-based code has been invalidated */
 			return AUTH_GRANTED;
 
@@ -296,16 +301,16 @@ static authn_status authn_totp_get_realm_hash(request_rec *r, const char *user, 
 	unsigned char *hash = apr_palloc(r->pool, APR_MD5_DIGESTSIZE);
 
     /* TODO Tolerance? */
-	unsigned int truncatedHash = computeTimeCode(get_timestamp(), shared_key, shared_key_len);
+	unsigned int totp_code = generate_totp_code(get_timestamp(), shared_key, shared_key_len);
 
-	char *pwstr = apr_psprintf(r->pool,"%6.6u",truncatedHash);
+	char *pwstr = apr_psprintf(r->pool,"%6.6u",totp_code);
 	char *hashstr = apr_psprintf(r->pool,"%s:%s:%s",user,realm,pwstr);
 	
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Password \"%s\" at modulus %lu", pwstr, (apr_time_now() / 1000000) % 30);
 #endif
 
-	apr_md5(hash , hashstr, strlen(hashstr));
+	apr_md5(hash, hashstr, strlen(hashstr));
 	*rethash = hex_encode(r->pool, hash, APR_MD5_DIGESTSIZE);
 
 	/* TODO Authentication? */
