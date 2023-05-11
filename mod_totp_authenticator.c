@@ -151,6 +151,13 @@ module AP_MODULE_DECLARE_DATA authn_totp_module;
 
 /* Authentication Helpers */
 
+typdef struct {
+	char *shared_key;
+	int   window_size;
+	int   rate_limit_count;
+	int   rate_limit_seconds;
+} totp_user_config;
+
 static char    *
 read_shared_key(request_rec *r, char *filename)
 {
