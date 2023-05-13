@@ -48,7 +48,7 @@
 #include "apr_general.h"
 #include "apr_base64.h"
 
-#include <stdbool.h> /* for bool */
+#include <stdbool.h>		/* for bool */
 
 #define DEBUG_TOTP_AUTH
 
@@ -168,14 +168,14 @@ module AP_MODULE_DECLARE_DATA authn_totp_module;
 /* Authentication Helpers */
 
 typedef struct {
-	char *shared_key;
-	unsigned int shared_key_len;
-	bool  disallow_reuse;
-	unsigned char window_size;
-	int   rate_limit_count;
-	int   rate_limit_seconds;
-	unsigned int scratch_codes[10];
-	unsigned int scratch_codes_count;
+	char           *shared_key;
+	unsigned int    shared_key_len;
+	bool            disallow_reuse;
+	unsigned char   window_size;
+	int             rate_limit_count;
+	int             rate_limit_seconds;
+	unsigned int    scratch_codes[10];
+	unsigned int    scratch_codes_count;
 } totp_user_config;
 
 /**
@@ -186,39 +186,37 @@ typedef struct {
   * \return Pointer to structure containing TOTP configuration for given user on success, NULL otherwise
  **/
 static totp_user_config *
-get_user_totp_config(request_rec *r, totp_auth_config_rec *conf, const char *username)
+get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
+		     const char *username)
 {
-	const char     *tmp;
-	const char     *psep = "=";
-	char           *config_filename;
-	char           *token, *last;
-	char            line[MAX_STRING_LEN];
-	unsigned int    line_len = 0;
-	int             count = 0;
-	apr_status_t    status;
-	ap_configfile_t *config_file;
+	const char       *tmp;
+	const char       *psep = "=";
+	char             *config_filename;
+	char             *token, *last;
+	char              line[MAX_STRING_LEN];
+	unsigned int      line_len = 0;
+	int               count = 0;
+	apr_status_t      status;
+	ap_configfile_t  *config_file;
 	totp_user_config *user_config = NULL;
 
 	/* validate user name */
-	for (tmp = username; *tmp; ++tmp)
-	{
-		if (!apr_isalnum(*tmp))
-		{
+	for (tmp = username; *tmp; ++tmp) {
+		if (!apr_isalnum(*tmp)) {
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-			      "get_user_totp_config: username '%s' contains invalid character %c",
-			      username, *tmp);
+				      "get_user_totp_config: username '%s' contains invalid character %c",
+				      username, *tmp);
 			return NULL;
 		}
-	}		
+	}
 
 	config_filename = apr_psprintf(r->pool, "%s/%s", conf->tokenDir, username);
 
 	status = ap_pcfg_openfile(&config_file, r->pool, config_filename);
 
-	if (status != APR_SUCCESS)
-	{
+	if (status != APR_SUCCESS) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-			      "get_user_totp_config: Could not open user configuration file: %s",
+			      "get_user_totp_config: could not open user configuration file: %s",
 			      config_filename);
 		return NULL;
 	}
@@ -226,123 +224,123 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf, const char *use
 	user_config = apr_palloc(r->pool, sizeof(*user_config));
 	memset(user_config, 0, sizeof(*user_config));
 
-	while (!(ap_cfg_getline(line, MAX_STRING_LEN, config_file)))
-	{
+	while (!(ap_cfg_getline(line, MAX_STRING_LEN, config_file))) {
 		/* Skip blank lines. */
-		if (!line[0]) continue;
+		if (!line[0])
+			continue;
 		/* Parse authentication settings. */
-		if (line[0] == '"') 
-		{
+		if (line[0] == '"') {
 			token = apr_strtok(&line[2], psep, &last);
-			if (token != NULL)
-			{
-				if(0 == apr_strnatcmp(token, "DISALLOW_REUSE"))
-				{
+			if (token != NULL) {
+				if (0 == apr_strnatcmp(token, "DISALLOW_REUSE")) {
 					user_config->disallow_reuse = true;
-				}
-				else if(0 == apr_strnatcmp(token, "WINDOW_SIZE"))
-				{
+				} else if (0 == apr_strnatcmp(token, "WINDOW_SIZE")) {
 					token = apr_strtok(NULL, psep, &last);
-					for (tmp = token; *tmp; ++tmp)
-					{
-						if (!apr_isdigit(*tmp))
-						{
-							ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-								"get_user_totp_config: window size '%s' contains invalid character %c",
-								token, *tmp);
+					for (tmp = token; *tmp; ++tmp) {
+						if (!apr_isdigit(*tmp)) {
+							ap_log_rerror(APLOG_MARK,
+								      APLOG_ERR,
+								      status, r,
+								      "get_user_totp_config: window size '%s' contains invalid character %c",
+								      token, *tmp);
 							token = NULL;
 						}
 					}
 					if (token)
-						user_config->window_size = max(0, min(apr_atoi64(token), 32));
+						user_config->window_size =
+						    max(0,
+							min(apr_atoi64(token), 32));
 					else
-						ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-			  			    "get_user_totp_config: Invalid WINDOW_SIZE directive: missing value. See line: %s",
-			     			 line);
-				}
-				else if(0 == apr_strnatcmp(token, "RATE_LIMIT"))
-				{
+						ap_log_rerror(APLOG_MARK, APLOG_ERR,
+							      status, r,
+							      "get_user_totp_config: invalid WINDOW_SIZE directive: missing value. See line: %s",
+							      line);
+				} else if (0 == apr_strnatcmp(token, "RATE_LIMIT")) {
 					token = apr_strtok(NULL, psep, &last);
-					for (tmp = token; *tmp; ++tmp)
-					{
-						if (!apr_isdigit(*tmp))
-						{
-							ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-								"get_user_totp_config: rate limit count '%s' contains invalid character %c",
-								token, *tmp);
-							token = NULL;
-						}
-					}
-					if(token)
-						user_config->rate_limit_count = max(0, min(apr_atoi64(token), 5));
-					else
-						ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-			  			    "get_user_totp_config: Invalid RATE_LIMIT directive: missing value. See line: %s",
-			     			 line);
-					token = apr_strtok(NULL, psep, &last);
-					for (tmp = token; *tmp; ++tmp)
-					{
-						if (!apr_isdigit(*tmp))
-						{
-							ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-								"get_user_totp_config: rate limit seconds '%s' contains invalid character %c",
-								token, *tmp);
+					for (tmp = token; *tmp; ++tmp) {
+						if (!apr_isdigit(*tmp)) {
+							ap_log_rerror(APLOG_MARK,
+								      APLOG_ERR,
+								      status, r,
+								      "get_user_totp_config: rate limit count '%s' contains invalid character %c",
+								      token, *tmp);
 							token = NULL;
 						}
 					}
 					if (token)
-						user_config->rate_limit_seconds = max(30, min(apr_atoi64(token), 300));
+						user_config->rate_limit_count =
+						    max(0,
+							min(apr_atoi64(token), 5));
 					else
-					{
+						ap_log_rerror(APLOG_MARK, APLOG_ERR,
+							      status, r,
+							      "get_user_totp_config: invalid RATE_LIMIT directive: missing value. See line: %s",
+							      line);
+					token = apr_strtok(NULL, psep, &last);
+					for (tmp = token; *tmp; ++tmp) {
+						if (!apr_isdigit(*tmp)) {
+							ap_log_rerror(APLOG_MARK,
+								      APLOG_ERR,
+								      status, r,
+								      "get_user_totp_config: rate limit seconds '%s' contains invalid character %c",
+								      token, *tmp);
+							token = NULL;
+						}
+					}
+					if (token)
+						user_config->rate_limit_seconds =
+						    max(30,
+							min(apr_atoi64(token), 300));
+					else {
 						user_config->rate_limit_count = 0;
-						ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-			  			    "get_user_totp_config: Invalid RATE_LIMIT directive: missing value. See line: %s",
-			     			 line);
+						ap_log_rerror(APLOG_MARK, APLOG_ERR,
+							      status, r,
+							      "get_user_totp_config: invalid RATE_LIMIT directive: missing value. See line: %s",
+							      line);
 					}
 				}
 			}
 		}
 		/* Shared key is on the first valid line */
-		else if (!user_config->shared_key) 
-		{
+		else if (!user_config->shared_key) {
 			token = apr_pstrdup(r->pool, line);
 			line_len = strlen(token);
 
 			user_config->shared_key = apr_palloc(r->pool, line_len + 1);
 			memset(user_config->shared_key, 0, line_len);
 
-			count = base32_decode(token, user_config->shared_key, line_len);
-			if(count < 0)
-			{
+			count =
+			    base32_decode(token, user_config->shared_key, line_len);
+			if (count < 0) {
 				memset(user_config->shared_key, 0, line_len);
 				ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-			      	"Could not find a valid BASE32 encoded secret");
-			}
-			else
-			{
-				memset(user_config->shared_key + count, 0, line_len + 1 - count);
+					      "get_user_totp_config: could not find a valid BASE32 encoded secret");
+				return NULL;
+			} else {
+				memset(user_config->shared_key + count, 0,
+				       line_len + 1 - count);
 				user_config->shared_key_len = count;
 			}
 		}
 		/* Handle scratch codes */
-		else
-		{
+		else {
 			token = apr_pstrdup(r->pool, line);
 			line_len = strlen(token);
 
 			/* validate scratch code */
-			for (tmp = token; *tmp; ++tmp)
-			{
-				if (!apr_isdigit(*tmp))
-				{
-					ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-						"get_user_totp_config: scratch code '%s' contains invalid character %c",
-						line, *tmp);
+			for (tmp = token; *tmp; ++tmp) {
+				if (!apr_isdigit(*tmp)) {
+					ap_log_rerror(APLOG_MARK, APLOG_ERR, status,
+						      r,
+						      "get_user_totp_config: scratch code '%s' contains invalid character %c",
+						      line, *tmp);
 					token = NULL;
 				}
 			}
 			if (token)
-				user_config->scratch_codes[user_config->scratch_codes_count++] = apr_atoi64(token);
+				user_config->scratch_codes[user_config->
+							   scratch_codes_count++] =
+				    apr_atoi64(token);
 		}
 	}
 
@@ -400,18 +398,18 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #endif
 
 	totp_config = get_user_totp_config(r, conf, user);
-	if (!totp_config)
-	{
+	if (!totp_config) {
 #ifdef DEBUG_TOTP_AUTH
-	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "could not find TOTP configuration for user \"%s\"", user);
-#endif		
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+			      "could not find TOTP configuration for user \"%s\"",
+			      user);
+#endif
 		return AUTH_DENIED;
 	}
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "secret key is \"%s\", secret length: %d", totp_config->shared_key,
-		      totp_config->shared_key_len);
+		      "secret key is \"%s\", secret length: %d",
+		      totp_config->shared_key, totp_config->shared_key_len);
 #endif
 
 	/***
@@ -421,7 +419,8 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	code = (unsigned int) apr_atoi64(password);
 	for (i = -(conf->tolerance); i <= (conf->tolerance); ++i) {
 		totp_code =
-		    generate_totp_code(timestamp + i, totp_config->shared_key, totp_config->shared_key_len);
+		    generate_totp_code(timestamp + i, totp_config->shared_key,
+				       totp_config->shared_key_len);
 
 #ifdef DEBUG_TOTP_AUTH
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -429,12 +428,11 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 			      timestamp, totp_code, code);
 #endif
 
-		if (totp_code == code)
-		{
+		if (totp_code == code) {
 #ifdef DEBUG_TOTP_AUTH
-	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "access granted for user \"%s\" based on code \"%6.6u\"",
-			  user, code);
+			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+				      "access granted for user \"%s\" based on code \"%6.6u\"",
+				      user, code);
 #endif
 			return AUTH_GRANTED;
 		}
@@ -444,7 +442,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 		      "access denied for user \"%s\" based on code \"%6.6u\"",
-			  user, code);
+		      user, code);
 #endif
 
 	return AUTH_DENIED;
@@ -474,39 +472,39 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 #endif
 
 	totp_config = get_user_totp_config(r, conf, user);
-	if (!totp_config)
-	{
+	if (!totp_config) {
 #ifdef DEBUG_TOTP_AUTH
-	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "could not find TOTP configuration for user \"%s\"", user);
-#endif		
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+			      "could not find TOTP configuration for user \"%s\"",
+			      user);
+#endif
 		return AUTH_USER_NOT_FOUND;
 	}
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "secret key is \"%s\", secret length: %d", totp_config->shared_key,
-		      totp_config->shared_key_len);
+		      "secret key is \"%s\", secret length: %d",
+		      totp_config->shared_key, totp_config->shared_key_len);
 #endif
 
 	hash = apr_palloc(r->pool, APR_MD5_DIGESTSIZE);
 
-	/* TODO Tolerance? */
-	totp_code = generate_totp_code(get_timestamp(), totp_config->shared_key, totp_config->shared_key_len);
+	totp_code =
+	    generate_totp_code(get_timestamp(), totp_config->shared_key,
+			       totp_config->shared_key_len);
 
 	pwstr = apr_psprintf(r->pool, "%6.6u", totp_code);
 	hashstr = apr_psprintf(r->pool, "%s:%s:%s", user, realm, pwstr);
 
 #ifdef DEBUG_TOTP_AUTH
-	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "user \"%s\", password \"%s\" at modulus %lu",
-		      user, pwstr, (apr_time_now() / 1000000) % 30);
+	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+		      "user \"%s\", password \"%s\" at modulus %lu", user, pwstr,
+		      (apr_time_now() / 1000000) % 30);
 #endif
 
 	apr_md5(hash, hashstr, strlen(hashstr));
 	*rethash = hex_encode(r->pool, hash, APR_MD5_DIGESTSIZE);
 
-	/* TODO Authentication? */
-	return AUTH_DENIED;
-	// return AUTH_USER_FOUND;
+	return AUTH_USER_FOUND;
 }
 
 /* Module Declaration */
@@ -522,7 +520,7 @@ register_hooks(apr_pool_t *p)
 				  AP_AUTH_INTERNAL_PER_CONF);
 }
 
-AP_DECLARE_MODULE(authn_totp) = 
+AP_DECLARE_MODULE(authn_totp) =
 {
     STANDARD20_MODULE_STUFF,
     create_authn_totp_config,	    /* dir config creater */
