@@ -48,9 +48,25 @@
 #include "apr_general.h"
 #include "apr_base64.h"
 
+#include <stdbool.h> /* for bool */
+
 #define DEBUG_TOTP_AUTH
 
 /* Helper functions */
+#define max(a,b)             \
+({                           \
+    __typeof__ (a) _a = (a); \
+    __typeof__ (b) _b = (b); \
+    _a > _b ? _a : _b;       \
+})
+
+#define min(a,b)             \
+({                           \
+    __typeof__ (a) _a = (a); \
+    __typeof__ (b) _b = (b); \
+    _a < _b ? _a : _b;       \
+})
+
 
 static unsigned int
 get_timestamp()
@@ -151,7 +167,7 @@ module AP_MODULE_DECLARE_DATA authn_totp_module;
 
 /* Authentication Helpers */
 
-typdef struct {
+typedef struct {
 	char *shared_key;
 	unsigned int shared_key_len;
 	bool  disallow_reuse;
@@ -175,9 +191,9 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf, const char *use
 	const char     *tmp;
 	const char     *psep = "=";
 	char           *config_filename;
-	char           *token, last;
+	char           *token, *last;
 	char            line[MAX_STRING_LEN];
-	unsigned int    key_len = 0; 
+	unsigned int    line_len = 0;
 	int             count = 0;
 	apr_status_t    status;
 	ap_configfile_t *config_file;
@@ -207,7 +223,7 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf, const char *use
 		return NULL;
 	}
 
-	user_config = apr_palloc(p, sizeof(*user_config));
+	user_config = apr_palloc(r->pool, sizeof(*user_config));
 	memset(user_config, 0, sizeof(*user_config));
 
 	while (!(ap_cfg_getline(line, MAX_STRING_LEN, config_file)))
@@ -292,20 +308,20 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf, const char *use
 			token = apr_pstrdup(r->pool, line);
 			line_len = strlen(token);
 
-			user_config->secret_key = apr_palloc(r->pool, line_len + 1);
-			memset(user_config->secret_key, 0, line_len);
+			user_config->shared_key = apr_palloc(r->pool, line_len + 1);
+			memset(user_config->shared_key, 0, line_len);
 
-			count = base32_decode(token, user_config->secret_key, line_len);
+			count = base32_decode(token, user_config->shared_key, line_len);
 			if(count < 0)
 			{
-				memset(user_config->secret_key, 0, line_len);
+				memset(user_config->shared_key, 0, line_len);
 				ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 			      	"Could not find a valid BASE32 encoded secret");
 			}
 			else
 			{
-				memset(user_config->secret_key + count, 0, line_len + 1 - count);
-				user_config->secret_key_len = count;
+				memset(user_config->shared_key + count, 0, line_len + 1 - count);
+				user_config->shared_key_len = count;
 			}
 		}
 		/* Handle scratch codes */
@@ -326,7 +342,7 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf, const char *use
 				}
 			}
 			if (token)
-				user_config->scratch_codes[user_config->scratch_codes_count++] = apr_atoi64(token)
+				user_config->scratch_codes[user_config->scratch_codes_count++] = apr_atoi64(token);
 		}
 	}
 
@@ -418,7 +434,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 		      "access granted for user \"%s\" based on code \"%6.6u\"",
-			  user, password);
+			  user, code);
 #endif
 			return AUTH_GRANTED;
 		}
@@ -428,7 +444,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 		      "access denied for user \"%s\" based on code \"%6.6u\"",
-			  user, password);
+			  user, code);
 #endif
 
 	return AUTH_DENIED;
