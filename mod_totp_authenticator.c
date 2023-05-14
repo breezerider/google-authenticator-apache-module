@@ -23,6 +23,8 @@
  * Nicola Asuni - Fubra.com - 2011-12-07
  * This source code has been modified to be able to use an additional static password
  * joehil                   - 2017-06-30
+ * Repurpose this module as a general TOTP authenticator by
+ * Oleksandr Ostrenko
  */
 
 #include "apr_strings.h"
@@ -67,47 +69,29 @@
     _a < _b ? _a : _b;       \
 })
 
-
-static unsigned int
+/**
+  * \brief get_timestamp Get number of 30-second intervals since 00:00:00 January 1, 1970 UTC
+ **/
+static unsigned long
 get_timestamp()
 {
+	/* get number of microseconds since since 00:00:00 January 1, 1970 UTC */
 	apr_time_t      apr_time = apr_time_now();
-	apr_time /= 1000000;
-	apr_time /= 30;
+	apr_time /= 1000000; /* convert to seconds */
+	apr_time /= 30;      /* count number of 30-second intervals that have passed */
 
 	return (apr_time);
 }
 
-static unsigned char *
-decode_shared_secret(request_rec *r, const char *buf, int *len)
-{
-	// Decode secret key
-	int             base32Len = strlen(buf);
-	unsigned char  *secret = apr_palloc(r->pool, base32Len + 1);
-	memcpy(secret, buf, base32Len);
-	secret[base32Len] = '\000';
-
-	/* *len = (base32Len * 5 + 7) / 8; */
-	if ((*len = base32_decode(secret, secret, base32Len)) < 1) {
-		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-			      "Could not find a valid BASE32 encoded secret");
-		memset(secret, 0, base32Len);
-
-		return NULL;
-	}
-	memset(secret + *len, 0, base32Len + 1 - *len);
-	return secret;
-}
-
-static char    *
-hex_encode(apr_pool_t *p, uint8_t *data, int len)
+static char     *
+hex_encode(apr_pool_t *p, uint8_t *data, unsigned int len)
 {
 	const char     *hex = "0123456789abcdef";
-	char           *result = apr_palloc(p, (APR_MD5_DIGESTSIZE * 2) + 1);
+	char           *result = apr_palloc(p, (len * 2) + 1);
 	int             idx;
 	char           *h = result;
 
-	for (idx = 0; idx < APR_MD5_DIGESTSIZE; idx++) {
+	for (idx = 0; idx < len; idx++) {
 		*h++ = hex[data[idx] >> 4];
 		*h++ = hex[data[idx] & 0xF];
 	}
@@ -121,7 +105,6 @@ hex_encode(apr_pool_t *p, uint8_t *data, int len)
 typedef struct {
 	char           *tokenDir;
 	char           *stateDir;
-	char            tolerance;
 } totp_auth_config_rec;
 
 static void    *
@@ -130,7 +113,6 @@ create_authn_totp_config(apr_pool_t *p, char *d)
 	totp_auth_config_rec *conf = apr_palloc(p, sizeof(*conf));
 	conf->tokenDir = NULL;
 	conf->stateDir = NULL;
-	conf->tolerance = 1;
 
 	return conf;
 }
@@ -140,13 +122,13 @@ set_totp_auth_config_path(cmd_parms *cmd, void *offset, const char *path)
 {
 	return ap_set_file_slot(cmd, offset, path);
 }
-
+/*
 static const char *
 set_totp_auth_config_int(cmd_parms *cmd, void *offset, const char *value)
 {
 	return ap_set_int_slot(cmd, offset, value);
 }
-
+*/
 static const command_rec authn_totp_cmds[] = {
 	AP_INIT_TAKE1("TOTPAuthTokenDir", set_totp_auth_config_path,
 		      (void *) APR_OFFSETOF(totp_auth_config_rec, tokenDir),
@@ -156,10 +138,6 @@ static const command_rec authn_totp_cmds[] = {
 		      (void *) APR_OFFSETOF(totp_auth_config_rec, stateDir),
 		      OR_AUTHCFG,
 		      "Directory that contains TOTP key state information"),
-	AP_INIT_TAKE1("TOTPAuthTolerance", set_totp_auth_config_int,
-		      (void *) APR_OFFSETOF(totp_auth_config_rec, tolerance),
-		      OR_AUTHCFG,
-		      "Clock Tolerance (in number of past and future OTP that are accepted)"),
 	{NULL}
 };
 
@@ -349,20 +327,25 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 	return user_config;
 }
 
+/**
+  * \brief generate_totp_code Generate a one time password using shared secret and timestamp
+  * \param timestamp Unix timestamp
+  * \param secret Shared secret key.
+  * \param secret_len Length of the secret key.
+  * \return TOTP code
+ **/
 static unsigned int
-generate_totp_code(unsigned int timestamp, unsigned char *secret, int len)
+generate_totp_code(unsigned long challenge, unsigned char *secret, int secret_len)
 {
 	unsigned char   hash[SHA1_DIGEST_LENGTH];
-	unsigned long   chlg = timestamp;
-	unsigned char   challenge[8];
+	unsigned char   challenge_data[8];
 	unsigned int    totp_code = 0;
-	int             j;
-	int             offset;
+	int             j, offset;
 
-	for (j = 8; j--; chlg >>= 8)
-		challenge[j] = chlg;
+	for (j = 8; j--; challenge >>= 8)
+		challenge_data[j] = challenge;
 
-	hmac_sha1(secret, len, challenge, 8, hash, SHA1_DIGEST_LENGTH);
+	hmac_sha1(secret, secret_len, challenge_data, 8, hash, SHA1_DIGEST_LENGTH);
 	offset = hash[SHA1_DIGEST_LENGTH - 1] & 0xF;
 	for (j = 0; j < 4; ++j) {
 		totp_code <<= 8;
@@ -417,7 +400,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	 ***/
 	timestamp = get_timestamp();
 	code = (unsigned int) apr_atoi64(password);
-	for (i = -(conf->tolerance); i <= (conf->tolerance); ++i) {
+	for (i = -(totp_config->window_size); i <= (totp_config->window_size); ++i) {
 		totp_code =
 		    generate_totp_code(timestamp + i, totp_config->shared_key,
 				       totp_config->shared_key_len);
