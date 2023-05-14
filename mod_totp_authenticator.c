@@ -28,6 +28,7 @@
  */
 
 #include "apr_strings.h"
+#include "apr_file_io.h"
 #include "apr_lib.h"		/* for apr_isalnum */
 #include "apr_md5.h"		/* for APR_MD5_DIGESTSIZE */
 
@@ -372,7 +373,7 @@ mark_code_invalid(request_rec *r, totp_auth_config_rec *conf, const char *user,
 		  const char *password)
 {
 	char           *code_filepath;
-	apr_file_t      code_file;
+	apr_file_t     *code_file;
 	apr_status_t    status;
 
 	if (!conf->stateDir) {
@@ -384,16 +385,15 @@ mark_code_invalid(request_rec *r, totp_auth_config_rec *conf, const char *user,
 	code_filepath =
 	    apr_psprintf(r->pool, "%s/%s-c%s", conf->stateDir, user, password);
 
-	status = apr_file_open(&code_file,	/* new file handle */
-			       code_filepath,	    /* file name */
-			       APR_FOPEN_CREATE   | /* create file if not there */
-			       APR_FOPEN_EXCL     |	/* error if file was there already */
-			       APR_FOPEN_TRUNCATE |	/* truncate to 0 length */
-			       APR_FOPEN_XTHREAD	/* allow multiple threads to 
-							             * use the file */
-			       0,	                /* flags */
-			       APR_OS_DEFAULT,	    /* permissions */
-			       r->pool	            /* memory pool to use */
+	status = apr_file_open(&code_file,	 /* new file handle */
+			       code_filepath,	     /* file name */
+			       APR_FOPEN_CREATE   |  /* create file if not there */
+			       APR_FOPEN_EXCL     |	 /* error if file was there already */
+			       APR_FOPEN_TRUNCATE |	 /* truncate to 0 length */
+			       APR_FOPEN_XTHREAD,	 /* allow multiple threads to 
+							             /* use the file */
+			       APR_FPROT_OS_DEFAULT, /* permissions */
+			       r->pool	             /* memory pool to use */
 	    );
 
 	if (APR_SUCCESS != status) {
@@ -403,7 +403,7 @@ mark_code_invalid(request_rec *r, totp_auth_config_rec *conf, const char *user,
 		return false;
 	}
 
-	apr_file_close(&code_file);
+	apr_file_close(code_file);
 
 	return true;
 }
@@ -417,7 +417,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	    ap_get_module_config(r->per_dir_config, &authn_totp_module);
 	totp_user_config *totp_config = NULL;
 	unsigned int    password_len = strlen(password);
-	unsigned int    timestamp = get_timestamp();
+	unsigned long   timestamp = get_timestamp();
 	unsigned int    totp_code = 0;
 	unsigned int    user_code;
 	const char     *tmp;
@@ -484,7 +484,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
 	#ifdef DEBUG_TOTP_AUTH
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-					"validating code @ T=%d expected=\"%6.6u\" vs. input=\"%6.6u\"",
+					"validating code @ T=%lu expected=\"%6.6u\" vs. input=\"%6.6u\"",
 					timestamp, totp_code, user_code);
 	#endif
 
@@ -528,7 +528,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "access denied for user \"%s\" based on password \"s\"",
+		      "access denied for user \"%s\" based on password \"%s\"",
 		      user, password);
 #endif
 
@@ -547,7 +547,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 	    ap_get_module_config(r->per_dir_config, &authn_totp_module);
 
 	totp_user_config *totp_config = NULL;
-	unsigned int    timestamp = get_timestamp();
+	unsigned long   timestamp = get_timestamp();
 	unsigned int    totp_code;
 	char           *hashstr;
 	char           *pwstr;
