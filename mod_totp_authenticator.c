@@ -432,7 +432,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	/* validate user name */
 	for (tmp = user; *tmp; ++tmp) {
 		if (!apr_isalnum(*tmp)) {
-			ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 				      "user '%s' contains invalid character %c",
 				      user, *tmp);
 			return AUTH_DENIED;
@@ -443,14 +443,14 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	if ((password_len == 6) || (password_len == 8)) {
 		for (tmp = password; *tmp; ++tmp) {
 			if (!apr_isdigit(*tmp)) {
-				ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+				ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 						"password '%s' contains invalid character %c",
 						password, *tmp);
 				return AUTH_DENIED;
 			}
 		}
 	} else {
-		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 				"password '%s' is not recognized as TOTP (6 digits) or scratch code (8 digits)",
 				password);
 		return AUTH_DENIED;
@@ -547,6 +547,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 	    ap_get_module_config(r->per_dir_config, &authn_totp_module);
 
 	totp_user_config *totp_config = NULL;
+	unsigned int    timestamp = get_timestamp();
 	unsigned int    totp_code;
 	char           *hashstr;
 	char           *pwstr;
@@ -554,8 +555,8 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "**** TOTP DIGEST AUTH at  T=%lu  user  \"%s\"",
-		      apr_time_now() / 1000000, user);
+		      "TOTP DIGEST AUTH at timestamp=%lu user=\"%s\" realm=\"%s\"",
+		      timestamp, user, realm);
 #endif
 
 	totp_config = get_user_totp_config(r, conf, user);
@@ -576,7 +577,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 	hash = apr_palloc(r->pool, APR_MD5_DIGESTSIZE);
 
 	totp_code =
-	    generate_totp_code(get_timestamp(), totp_config->shared_key,
+	    generate_totp_code(timestamp, totp_config->shared_key,
 			       totp_config->shared_key_len);
 
 	pwstr = apr_psprintf(r->pool, "%6.6u", totp_code);
@@ -585,7 +586,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 		      "user \"%s\", password \"%s\" at modulus %lu", user, pwstr,
-		      (apr_time_now() / 1000000) % 30);
+		      timestamp);
 #endif
 
 	apr_md5(hash, hashstr, strlen(hashstr));
