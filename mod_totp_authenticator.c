@@ -169,7 +169,7 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 		     const char *username)
 {
 	const char       *tmp;
-	const char       *psep = "=";
+	const char       *psep = " ";
 	char             *config_filename;
 	char             *token, *last;
 	char              line[MAX_STRING_LEN];
@@ -273,7 +273,17 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 							      "get_user_totp_config: invalid RATE_LIMIT directive: missing value. See line: %s",
 							      line);
 					}
+				} else {
+					ap_log_rerror(APLOG_MARK, APLOG_ERR,
+						0, r,
+						"get_user_totp_config: unrecognized directive \"%s\"",
+						line);
 				}
+			} else {
+				ap_log_rerror(APLOG_MARK, APLOG_ERR,
+					0, r,
+					"get_user_totp_config: skipping comment line: %s",
+					line);
 			}
 		}
 		/* Shared key is on the first valid line */
