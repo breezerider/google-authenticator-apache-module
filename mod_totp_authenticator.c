@@ -397,9 +397,10 @@ mark_code_invalid(request_rec *r, totp_auth_config_rec *conf, const char *user,
 
 	status = apr_file_open(&code_file,	 /* new file handle */
 			       code_filepath,	     /* file name */
-			       APR_FOPEN_CREATE   |  /* create file if not there */
-			       APR_FOPEN_EXCL     |	 /* error if file was there already */
-			       APR_FOPEN_TRUNCATE |	 /* truncate to 0 length */
+			       APR_FOPEN_CREATE   |  /* create file if it does not exist */
+			       APR_FOPEN_EXCL     |	 /* return an error if file exists */
+				   APR_FOPEN_WRITE    |  /* open file for writing */
+			       APR_FOPEN_TRUNCATE |	 /* truncate file to 0 length */
 			       APR_FOPEN_XTHREAD,	 /* allow multiple threads to 
 							             /* use the file */
 			       APR_FPROT_OS_DEFAULT, /* permissions */
