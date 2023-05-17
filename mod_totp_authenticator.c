@@ -84,7 +84,7 @@ get_timestamp()
 	return (apr_time);
 }
 
-static char     *
+static char    *
 hex_encode(apr_pool_t *p, uint8_t *data, unsigned int len)
 {
 	const char     *hex = "0123456789abcdef";
@@ -101,16 +101,20 @@ hex_encode(apr_pool_t *p, uint8_t *data, unsigned int len)
 	return result;
 }
 
-static char ensure_only_digits_string(const char *val) {
-	const char *tmp = val;
+static char
+is_digit_str(const char *val)
+{
+	const char     *tmp = val;
 	for (; *tmp; ++tmp)
 		if (!apr_isdigit(*tmp))
 			return *tmp;
 	return NULL;
 }
 
-static char ensure_alnum_string(const char *val) {
-	const char *tmp = val;
+static char
+is_alnum_str(const char *val)
+{
+	const char     *tmp = val;
 	for (; *tmp; ++tmp)
 		if (!apr_isalnum(*tmp))
 			return *tmp;
@@ -173,6 +177,69 @@ typedef struct {
 	unsigned char   scratch_codes_count;
 } totp_user_config;
 
+static apr_status_t
+totp_update_file_helper(request_rec *r, unsigned long timestamp,
+			unsigned long timedelta, const char *filepath,
+			const char *tmppath)
+{
+	apr_status_t    status;
+	apr_file_t     *tmp_file;
+	apr_file_t     *target_file;
+
+	status = apr_file_open(&tmp_file,	/* temporary file handle */
+			       tmppath,	/* file name */
+			       APR_FOPEN_CREATE |	/* create file if it does
+							 * not exist */
+			       APR_FOPEN_EXCL |	/* return an error if file exists */
+			       APR_FOPEN_WRITE |	/* open file for writing */
+			       APR_FOPEN_TRUNCATE,	/* truncate file to 0 length 
+							 */
+			       APR_FPROT_OS_DEFAULT,	/* permissions */
+			       r->pool	/* memory pool to use */
+	    );
+
+	if (APR_SUCCESS != status) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+			      "totp_update_file_helper: could not create temporary file \"%s\"",
+			      tmppath);
+		return status;
+	}
+
+	status = apr_file_open(&target_file,	/* target file handle */
+			       filepath,	/* file name */
+			       APR_FOPEN_CREATE |	/* create file if it does
+							 * not exist */
+			       APR_FOPEN_EXCL |	/* return an error if file exists */
+			       APR_FOPEN_WRITE |	/* open file for writing */
+			       APR_FOPEN_TRUNCATE,	/* truncate file to 0 length 
+							 */
+			       APR_FPROT_OS_DEFAULT,	/* permissions */
+			       r->pool	/* memory pool to use */
+	    );
+
+	if (APR_SUCCESS != status) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+			      "totp_update_file_helper: could not open target file \"%s\"",
+			      filepath);
+		apr_file_close(tmp_file);
+		return status;
+	}
+
+	apr_file_close(tmp_file);
+	apr_file_close(target_file);
+
+	status = apr_file_rename(tmppath, filepath, r->pool);
+
+	if (APR_SUCCESS != status) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+			      "totp_update_file_helper: unable to move file \"%s\" to \"\"",
+			      tmppath, filepath);
+		return status;
+	}
+
+	return APR_SUCCESS;
+}
+
 /**
   * \brief get_user_totp_config Based on the given username, get the users TOTP configuration
   * \param r Request
@@ -196,7 +263,7 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 	totp_user_config *user_config = NULL;
 
 	if (!conf->tokenDir) {
-		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 			      "get_user_totp_config: TOTPAuthTokenDir is not defined");
 		return NULL;
 	}
@@ -230,13 +297,14 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 				} else if (0 == apr_strnatcmp(token, "WINDOW_SIZE")) {
 					token = apr_strtok(NULL, psep, &last);
 
-					err_char = ensure_only_digits_string(token);
-					if(err_char)
+					err_char = is_digit_str(token);
+					if (err_char)
 						ap_log_rerror(APLOG_MARK,
-									APLOG_ERR,
-									0, r,
-									"get_user_totp_config: window size value '%s' contains invalid character %c at line %d",
-									token, err_char, line_no);
+							      APLOG_ERR,
+							      0, r,
+							      "get_user_totp_config: window size value '%s' contains invalid character %c at line %d",
+							      token, err_char,
+							      line_no);
 					else
 						user_config->window_size =
 						    max(0,
@@ -244,13 +312,14 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 				} else if (0 == apr_strnatcmp(token, "RATE_LIMIT")) {
 					token = apr_strtok(NULL, psep, &last);
 
-					err_char = ensure_only_digits_string(token);
-					if(err_char)
+					err_char = is_digit_str(token);
+					if (err_char)
 						ap_log_rerror(APLOG_MARK,
-									APLOG_ERR,
-									0, r,
-									"get_user_totp_config: rate limit count value '%s' contains invalid character %c at line %d",
-									token, err_char, line_no);
+							      APLOG_ERR,
+							      0, r,
+							      "get_user_totp_config: rate limit count value '%s' contains invalid character %c at line %d",
+							      token, err_char,
+							      line_no);
 					else
 						user_config->rate_limit_count =
 						    max(0,
@@ -258,31 +327,30 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 
 					token = apr_strtok(NULL, psep, &last);
 
-					err_char = ensure_only_digits_string(token);
-					if(err_char)
-					{
+					err_char = is_digit_str(token);
+					if (err_char) {
 						user_config->rate_limit_count = 0;
 						ap_log_rerror(APLOG_MARK,
-									APLOG_ERR,
-									0, r,
-									"get_user_totp_config: rate limit seconds value '%s' contains invalid character %c at line %d",
-									token, err_char, line_no);
-					}
-					else
+							      APLOG_ERR,
+							      0, r,
+							      "get_user_totp_config: rate limit seconds value '%s' contains invalid character %c at line %d",
+							      token, err_char,
+							      line_no);
+					} else
 						user_config->rate_limit_seconds =
 						    max(30,
 							min(apr_atoi64(token), 300));
 				} else
 					ap_log_rerror(APLOG_MARK, APLOG_DEBUG,
-						0, r,
-						"get_user_totp_config: unrecognized directive \"%s\" at line %d",
-						line, line_no);
+						      0, r,
+						      "get_user_totp_config: unrecognized directive \"%s\" at line %d",
+						      line, line_no);
 
 			} else
 				ap_log_rerror(APLOG_MARK, APLOG_DEBUG,
-					0, r,
-					"get_user_totp_config: skipping comment line \"%s\" at line %d",
-					line, line_no);
+					      0, r,
+					      "get_user_totp_config: skipping comment line \"%s\" at line %d",
+					      line, line_no);
 		}
 		/* Shared key is on the first valid line */
 		else if (!user_config->shared_key) {
@@ -311,21 +379,21 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 			line_len = strlen(token);
 
 			/* validate scratch code */
-			err_char = ensure_only_digits_string(token);
-			if(err_char)
+			err_char = is_digit_str(token);
+			if (err_char)
 				ap_log_rerror(APLOG_MARK, APLOG_ERR, 0,
-							r,
-							"get_user_totp_config: scratch code '%s' contains invalid character %c at line %d",
-							line, err_char, line_no);
+					      r,
+					      "get_user_totp_config: scratch code '%s' contains invalid character %c at line %d",
+					      line, err_char, line_no);
 			else if (user_config->scratch_codes_count < 10)
-				user_config->scratch_codes[user_config->
-							   scratch_codes_count++] =
-				    apr_atoi64(token);
+				user_config->
+				    scratch_codes[user_config->scratch_codes_count++]
+				    = apr_atoi64(token);
 			else
 				ap_log_rerror(APLOG_MARK, APLOG_ERR, 0,
-						      r,
-						      "get_user_totp_config: scratch code '%s' at line %d was skipped, only 10 scratch codes per user are supported",
-						      line, line_no);
+					      r,
+					      "get_user_totp_config: scratch code '%s' at line %d was skipped, only 10 scratch codes per user are supported",
+					      line, line_no);
 		}
 	}
 
@@ -437,27 +505,27 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #endif
 
 	/* validate user name */
-	err_char = ensure_alnum_string(user);
-	if(err_char) {
+	err_char = is_alnum_str(user);
+	if (err_char) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-				"user '%s' contains invalid character %c",
-				user, err_char);
+			      "user '%s' contains invalid character %c",
+			      user, err_char);
 		return AUTH_DENIED;
 	}
 
 	/* validate password */
 	if ((password_len == 6) || (password_len == 8)) {
-		err_char = ensure_only_digits_string(password);
-		if(err_char) {
+		err_char = is_digit_str(password);
+		if (err_char) {
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-					"password '%s' contains invalid character %c",
-					password, err_char);
+				      "password '%s' contains invalid character %c",
+				      password, err_char);
 			return AUTH_DENIED;
 		}
 	} else {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-				"password '%s' is not recognized as TOTP (6 digits) or scratch code (8 digits)",
-				password);
+			      "password '%s' is not recognized as TOTP (6 digits) or scratch code (8 digits)",
+			      password);
 		return AUTH_DENIED;
 	}
 
@@ -482,24 +550,26 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	user_code = (unsigned int) apr_atoi64(password);
 	/* TOTP codes */
 	if (password_len == 6) {
-		for (i = -(totp_config->window_size); i <= (totp_config->window_size); ++i) {
+		for (i = -(totp_config->window_size);
+		     i <= (totp_config->window_size); ++i) {
 			totp_code =
-				generate_totp_code(timestamp + i, totp_config->shared_key,
-						totp_config->shared_key_len);
+			    generate_totp_code(timestamp + i,
+					       totp_config->shared_key,
+					       totp_config->shared_key_len);
 
-	#ifdef DEBUG_TOTP_AUTH
+#ifdef DEBUG_TOTP_AUTH
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-					"validating code @ T=%lu expected=\"%6.6u\" vs. input=\"%6.6u\"",
-					timestamp, totp_code, user_code);
-	#endif
+				      "validating code @ T=%lu expected=\"%6.6u\" vs. input=\"%6.6u\"",
+				      timestamp, totp_code, user_code);
+#endif
 
 			if (totp_code == user_code) {
 				if (mark_code_invalid(r, conf, user, password)) {
-		#ifdef DEBUG_TOTP_AUTH
+#ifdef DEBUG_TOTP_AUTH
 					ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-							"access granted for user \"%s\" based on code \"%6.6u\"",
-							user, user_code);
-		#endif
+						      "access granted for user \"%s\" based on code \"%6.6u\"",
+						      user, user_code);
+#endif
 					return AUTH_GRANTED;
 				} else
 					/* fail authentication attempt */
@@ -507,22 +577,22 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 			}
 
 		}
-	} 
+	}
 	/* Scratch codes */
 	else {
 		for (i = 0; i < totp_config->scratch_codes_count; ++i) {
-	#ifdef DEBUG_TOTP_AUTH
+#ifdef DEBUG_TOTP_AUTH
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-					"validating scratch code expected=\"%8.8u\" vs. input=\"%8.8u\"",
-					totp_config->scratch_codes[i], user_code);
-	#endif
-			if(totp_config->scratch_codes[i] == user_code) {
+				      "validating scratch code expected=\"%8.8u\" vs. input=\"%8.8u\"",
+				      totp_config->scratch_codes[i], user_code);
+#endif
+			if (totp_config->scratch_codes[i] == user_code) {
 				if (mark_code_invalid(r, conf, user, password)) {
-		#ifdef DEBUG_TOTP_AUTH
+#ifdef DEBUG_TOTP_AUTH
 					ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-							"access granted for user \"%s\" based on scratch code \"%8.8u\"",
-							user, user_code);
-		#endif
+						      "access granted for user \"%s\" based on scratch code \"%8.8u\"",
+						      user, user_code);
+#endif
 					return AUTH_GRANTED;
 				} else
 					/* fail authentication attempt */
@@ -540,7 +610,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	return AUTH_DENIED;
 }
 
-/* This handles Digest Authentication. Returns a has of the 
+/* This handles Digest Authentication. Returns a has of the
    User, Realm and (Required) Password. Caller (Digest module)
 	 determines if the entered password was actually valid
 */
@@ -566,11 +636,11 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 #endif
 
 	/* validate user name */
-	err_char = ensure_alnum_string(user);
-	if(err_char) {
+	err_char = is_alnum_str(user);
+	if (err_char) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-				"user '%s' contains invalid character %c",
-				user, err_char);
+			      "user '%s' contains invalid character %c",
+			      user, err_char);
 		return AUTH_USER_NOT_FOUND;
 	}
 
@@ -623,7 +693,7 @@ register_hooks(apr_pool_t *p)
 				  AP_AUTH_INTERNAL_PER_CONF);
 }
 
-AP_DECLARE_MODULE(authn_totp) =
+AP_DECLARE_MODULE(authn_totp) = 
 {
     STANDARD20_MODULE_STUFF,
     create_authn_totp_config,	    /* dir config creater */
