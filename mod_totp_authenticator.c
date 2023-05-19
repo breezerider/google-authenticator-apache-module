@@ -186,16 +186,16 @@ totp_update_file_helper(request_rec *r, unsigned long timestamp,
 	apr_file_t     *tmp_file;
 	apr_file_t     *target_file;
 
-	status = apr_file_open(&tmp_file,	/* temporary file handle */
-			       tmppath,	/* file name */
-			       APR_FOPEN_CREATE |	/* create file if it does
-							 * not exist */
-			       APR_FOPEN_EXCL |	/* return an error if file exists */
-			       APR_FOPEN_WRITE |	/* open file for writing */
-			       APR_FOPEN_TRUNCATE,	/* truncate file to 0 length 
-							 */
-			       APR_FPROT_OS_DEFAULT,	/* permissions */
-			       r->pool	/* memory pool to use */
+	status = apr_file_open(&tmp_file,    /* temporary file handle */
+			       tmppath,              /* file name */
+			       APR_FOPEN_CREATE |	 /* create file if it does
+							              * not exist */
+			       APR_FOPEN_EXCL   |    /* return an error if file exists */
+			       APR_FOPEN_WRITE  |    /* open file for writing */
+			       APR_FOPEN_TRUNCATE,	 /* truncate file to 0 length */
+			       APR_UREAD|APR_UWRITE, /* set read/write permissions 
+				                          * only for owner */
+			       r->pool	             /* memory pool to use */
 	    );
 
 	if (APR_SUCCESS != status) {
@@ -205,16 +205,11 @@ totp_update_file_helper(request_rec *r, unsigned long timestamp,
 		return status;
 	}
 
-	status = apr_file_open(&target_file,	/* target file handle */
-			       filepath,	/* file name */
-			       APR_FOPEN_CREATE |	/* create file if it does
-							 * not exist */
-			       APR_FOPEN_EXCL |	/* return an error if file exists */
-			       APR_FOPEN_WRITE |	/* open file for writing */
-			       APR_FOPEN_TRUNCATE,	/* truncate file to 0 length 
-							 */
-			       APR_FPROT_OS_DEFAULT,	/* permissions */
-			       r->pool	/* memory pool to use */
+	status = apr_file_open(&target_file, /* target file handle */
+			       filepath,	         /* file name */
+			       APR_FOPEN_READ,       /* open file for reading */
+			       APR_FPROT_OS_DEFAULT, /* permissions */
+			       r->pool	             /* memory pool to use */
 	    );
 
 	if (APR_SUCCESS != status) {
