@@ -48,7 +48,7 @@
 #include "apr_md5.h"		/* for APR_MD5_DIGESTSIZE */
 #include "apr_sha1.h"
 #include "apr_mmap.h"
-#include "apr_base64.h"     /* for apr_pdecode_base32 */
+#include "apr_encode.h"     /* for apr_pdecode_base32 */
 
 #include <stdbool.h>		/* for bool */
 
@@ -197,7 +197,7 @@ totp_update_file_helper(request_rec *r, const char *filepath,
     apr_time_t      entry_time;
     const char     *file_data;
 
-    tmp_filepath = apr_psprintf(r->pool, "%s." APR_TIME_T_FMT, filepath, timestamp);
+    tmp_filepath = apr_psprintf(r->pool, "%s.%" APR_TIME_T_FMT, filepath, timestamp);
 
 	status = apr_file_open(&tmp_file,    /* temporary file handle */
 			       tmp_filepath,         /* file name */
@@ -254,7 +254,8 @@ totp_update_file_helper(request_rec *r, const char *filepath,
 
 		/* process the file contents */
 		file_data = target_mmap->mm;
-		for(entry_pos = 0; entry_pos < mmap->size; entry_pos += entry_size, file_data += entry_size) {
+		for(entry_pos = 0; entry_pos < target_mmap->size;
+            entry_pos += entry_size, file_data += entry_size) {
 			entry_time = *((apr_time_t*)file_data);
 
 			if(timestamp > entry_time) {
@@ -469,7 +470,7 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 static unsigned int
 generate_totp_code(apr_time_t timestamp, const char *secret, apr_size_t secret_len)
 {
-	unsigned char   hash[SHA1_DIGEST_LENGTH];
+	unsigned char   hash[APR_SHA1_DIGESTSIZE];
 	unsigned char   challenge_data[sizeof(apr_time_t)], challenge_size = sizeof(apr_time_t);
 	unsigned int    totp_code = 0;
 	int             j, offset;
@@ -477,8 +478,8 @@ generate_totp_code(apr_time_t timestamp, const char *secret, apr_size_t secret_l
 	for (j = challenge_size; j--; timestamp >>= 8)
 		challenge_data[j] = timestamp;
 
-	hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash, SHA1_DIGEST_LENGTH);
-	offset = hash[SHA1_DIGEST_LENGTH - 1] & 0xF;
+	hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash, APR_SHA1_DIGESTSIZE);
+	offset = hash[APR_SHA1_DIGESTSIZE - 1] & 0xF;
 	for (j = 0; j < 4; ++j) {
 		totp_code <<= 8;
 		totp_code |= hash[offset + j];
@@ -555,7 +556,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "TOTP BASIC AUTH at timestamp=" APR_TIME_T_FMT " user=\"%s\" password=\"%s\"",
+		      "TOTP BASIC AUTH at timestamp=%" APR_TIME_T_FMT " user=\"%s\" password=\"%s\"",
 		      timestamp, user, password);
 #endif
 
@@ -614,12 +615,12 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
 #ifdef DEBUG_TOTP_AUTH
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-				      "validating code @ T=" APR_TIME_T_FMT " expected=\"%6.6u\" vs. input=\"%6.6u\"",
+				      "validating code @ T=%" APR_TIME_T_FMT " expected=\"%6.6u\" vs. input=\"%6.6u\"",
 				      timestamp, totp_code, user_code);
 #endif
 
 			if (totp_code == user_code) {
-				if (mark_code_invalid(r, conf, user, password)) {
+				if (mark_code_invalid(r, conf, timestamp, user, totp_code)) {
 #ifdef DEBUG_TOTP_AUTH
 					ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 						      "access granted for user \"%s\" based on code \"%6.6u\"",
@@ -642,7 +643,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 				      totp_config->scratch_codes[i], user_code);
 #endif
 			if (totp_config->scratch_codes[i] == user_code) {
-				if (mark_code_invalid(r, conf, user, password)) {
+				if (mark_code_invalid(r, conf, timestamp, user, totp_config->scratch_codes[i])) {
 #ifdef DEBUG_TOTP_AUTH
 					ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 						      "access granted for user \"%s\" based on scratch code \"%8.8u\"",
@@ -686,7 +687,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "TOTP DIGEST AUTH at timestamp=" APR_TIME_T_FMT " user=\"%s\" realm=\"%s\"",
+		      "TOTP DIGEST AUTH at timestamp=%" APR_TIME_T_FMT " user=\"%s\" realm=\"%s\"",
 		      timestamp, user, realm);
 #endif
 
@@ -725,7 +726,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "T=" APR_TIME_T_FMT ", user \"%s\", password \"%s\"",
+		      "T=%" APR_TIME_T_FMT ", user \"%s\", password \"%s\"",
               timestamp, user, pwstr);
 #endif
 
