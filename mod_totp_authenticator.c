@@ -257,7 +257,7 @@ totp_update_file_helper(request_rec *r, apr_time_t timestamp,
 
 	if (APR_SUCCESS != status) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-			      "totp_update_file_helper: unable to move file \"%s\" to \"\"",
+			      "totp_update_file_helper: unable to move file \"%s\" to \"%s\"",
 			      tmppath, filepath);
 		return status;
 	}
@@ -427,17 +427,17 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
   * \return TOTP code
  **/
 static unsigned int
-generate_totp_code(unsigned long challenge, const char *secret, apr_size_t secret_len)
+generate_totp_code(apr_time_t timestamp, const char *secret, apr_size_t secret_len)
 {
 	unsigned char   hash[SHA1_DIGEST_LENGTH];
-	unsigned char   challenge_data[8];
+	unsigned char   challenge_data[sizeof(apr_time_t)], challenge_size = sizeof(apr_time_t);
 	unsigned int    totp_code = 0;
 	int             j, offset;
 
-	for (j = 8; j--; challenge >>= 8)
-		challenge_data[j] = challenge;
+	for (j = challenge_size; j--; timestamp >>= 8)
+		challenge_data[j] = timestamp;
 
-	hmac_sha1(secret, secret_len, challenge_data, 8, hash, SHA1_DIGEST_LENGTH);
+	hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash, SHA1_DIGEST_LENGTH);
 	offset = hash[SHA1_DIGEST_LENGTH - 1] & 0xF;
 	for (j = 0; j < 4; ++j) {
 		totp_code <<= 8;
