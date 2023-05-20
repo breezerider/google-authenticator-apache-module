@@ -181,42 +181,49 @@ typedef struct {
 } totp_user_config;
 
 static apr_status_t
-totp_update_file_helper(request_rec *r, apr_time_t timestamp,
-			apr_interval_time_t timedelta, apr_size_t entry_size,
-			const char *filepath, const char *tmppath)
+totp_update_file_helper(request_rec *r, const char *filepath,
+            const char *new_entry, apr_size_t entry_size, 
+            apr_interval_time_t timedelta)
 {
 	apr_status_t    status;
+    const char     *tmp_filepath;
 	apr_file_t     *tmp_file;
 	apr_file_t     *target_file;
     apr_finfo_t     target_finfo;
     apr_mmap_t     *target_mmap;
+    apr_size_t      bytes_written;
+    apr_time_t      timestamp = *((apr_time_t *)new_entry);
+    apr_size_t      entry_pos;
+    apr_time_t      entry_time;
+    const char     *file_data;
+
+    tmp_filepath = apr_psprintf(r->pool, "%s." APR_TIME_T_FMT, filepath, timestamp);
 
 	status = apr_file_open(&tmp_file,    /* temporary file handle */
-			       tmppath,              /* file name */
-			       APR_FOPEN_CREATE |	 /* create file if it does
+			       tmp_filepath,         /* file name */
+			       APR_FOPEN_EXCL     |  /* return an error if file exists */
+			       APR_FOPEN_WRITE    |  /* open file for writing */
+			       APR_FOPEN_CREATE   |  /* create file if it does
 							              * not exist */
-			       APR_FOPEN_EXCL   |    /* return an error if file exists */
-			       APR_FOPEN_WRITE  |    /* open file for writing */
+                   APR_FOPEN_BUFFERED |  /* buffered file IO */
 			       APR_FOPEN_TRUNCATE,	 /* truncate file to 0 length */
 			       APR_UREAD|APR_UWRITE, /* set read/write permissions 
 				                          * only for owner */
 			       r->pool	             /* memory pool to use */
 	    );
-
 	if (APR_SUCCESS != status) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
 			      "totp_update_file_helper: could not create temporary file \"%s\"",
-			      tmppath);
+			      tmp_filepath);
 		return status;
 	}
 
 	status = apr_file_open(&target_file, /* target file handle */
 			       filepath,	         /* file name */
 			       APR_FOPEN_READ,       /* open file for reading */
-			       APR_FPROT_OS_DEFAULT, /* permissions */
+			       APR_FPROT_OS_DEFAULT, /* default permissions */
 			       r->pool	             /* memory pool to use */
 	    );
-
 	if ((APR_SUCCESS != status) && (APR_ENOENT != status)) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
 			      "totp_update_file_helper: could not open target file \"%s\"",
@@ -246,19 +253,52 @@ totp_update_file_helper(request_rec *r, apr_time_t timestamp,
 		apr_file_close(target_file);
 
 		/* process the file contents */
+		file_data = target_mmap->mm;
+		for(entry_pos = 0; entry_pos < mmap->size; entry_pos += entry_size, file_data += entry_size) {
+			entry_time = *((apr_time_t*)file_data);
+
+			if(timestamp > entry_time) {
+				/* check if entry time is within time tolerance */
+				if((timestamp - entry_time) <= timedelta) {
+					/* keep the entry */
+                    bytes_written = entry_size;
+					if (((status = apr_file_write(tmp_file, file_data, &bytes_written)) != APR_SUCCESS) ||
+                        (bytes_written != entry_size)) {
+						ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+								"totp_update_file_helper: could not write to temporary file \"%s\"",
+								tmp_filepath);
+                        apr_mmap_delete(target_mmap);
+						apr_file_close(tmp_file);
+						return status;
+					}
+				} 
+			} else {
+				/* entry is in the future */
+			}
+		}
 
 		/* delete the memory map */
 		apr_mmap_delete(target_mmap);
 	}
 
+    /* add current entry to file */
+    bytes_written = entry_size;
+    if (((status = apr_file_write(tmp_file, new_entry, &bytes_written)) != APR_SUCCESS) ||
+        (bytes_written != entry_size)) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+                "totp_update_file_helper: could not write to temporary file \"%s\"",
+                tmp_filepath);
+        apr_file_close(tmp_file);
+        return status;
+    }
+
 	apr_file_close(tmp_file);
 
-	status = apr_file_rename(tmppath, filepath, r->pool);
-
+	status = apr_file_rename(tmp_filepath, filepath, r->pool);
 	if (APR_SUCCESS != status) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
 			      "totp_update_file_helper: unable to move file \"%s\" to \"%s\"",
-			      tmppath, filepath);
+			      tmp_filepath, filepath);
 		return status;
 	}
 
@@ -450,20 +490,28 @@ generate_totp_code(apr_time_t timestamp, const char *secret, apr_size_t secret_l
 	return totp_code;
 }
 
+typedef struct {
+    apr_time_t   timestamp;
+    unsigned int totp_code;
+} totp_login_rec;
+
 /**
   * \brief mark_code_invalid Mark a code invalid
   * \param r Request
   * \param conf Pointer to TOTP authentication configuration record
-  * \param username Username
-  * \param password Password
+  * \param timestamp Timestamp for login event
+  * \param username Authenticating user name
+  * \param totp_code Authenticating TOTP code
   * \return true upon success, false otherwise
  **/
 static bool
-mark_code_invalid(request_rec *r, totp_auth_config_rec *conf, const char *user,
-		  const char *password)
+mark_code_invalid(request_rec *r, totp_auth_config_rec *conf, 
+          apr_time_t timestamp, const char *user, 
+          unsigned int totp_code)
 {
 	char           *code_filepath;
 	apr_file_t     *code_file;
+    totp_login_rec  login_data;
 	apr_status_t    status;
 
 	if (!conf->stateDir) {
@@ -473,28 +521,18 @@ mark_code_invalid(request_rec *r, totp_auth_config_rec *conf, const char *user,
 	}
 
 	code_filepath =
-	    apr_psprintf(r->pool, "%s/%s-c%s", conf->stateDir, user, password);
-
-	status = apr_file_open(&code_file,	 /* new file handle */
-			       code_filepath,	     /* file name */
-			       APR_FOPEN_CREATE   |  /* create file if it does not exist */
-			       APR_FOPEN_EXCL     |	 /* return an error if file exists */
-				   APR_FOPEN_WRITE    |  /* open file for writing */
-			       APR_FOPEN_TRUNCATE |	 /* truncate file to 0 length */
-			       APR_FOPEN_XTHREAD,	 /* allow multiple threads to 
-							             /* use the file */
-			       APR_FPROT_OS_DEFAULT, /* permissions */
-			       r->pool	             /* memory pool to use */
-	    );
-
+	    apr_psprintf(r->pool, "%s/%s.codes", conf->stateDir, user);
+    login_data.timestamp = timestamp;
+    login_data.totp_code = totp_code;
+	
+    status = totp_update_file_helper(r, code_filepath,
+            &login_data, sizeof(totp_login_rec), 3600);
 	if (APR_SUCCESS != status) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-			      "mark_code_invalid: could not create file \"%s\"",
+			      "mark_code_invalid: could not update codes file \"%s\"",
 			      code_filepath);
 		return false;
 	}
-
-	apr_file_close(code_file);
 
 	return true;
 }
@@ -517,7 +555,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "TOTP BASIC AUTH at timestamp=%lu user=\"%s\" password=\"%s\"",
+		      "TOTP BASIC AUTH at timestamp=" APR_TIME_T_FMT " user=\"%s\" password=\"%s\"",
 		      timestamp, user, password);
 #endif
 
@@ -576,7 +614,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
 #ifdef DEBUG_TOTP_AUTH
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-				      "validating code @ T=%lu expected=\"%6.6u\" vs. input=\"%6.6u\"",
+				      "validating code @ T=" APR_TIME_T_FMT " expected=\"%6.6u\" vs. input=\"%6.6u\"",
 				      timestamp, totp_code, user_code);
 #endif
 
@@ -648,7 +686,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "TOTP DIGEST AUTH at timestamp=%lu user=\"%s\" realm=\"%s\"",
+		      "TOTP DIGEST AUTH at timestamp=" APR_TIME_T_FMT " user=\"%s\" realm=\"%s\"",
 		      timestamp, user, realm);
 #endif
 
@@ -687,8 +725,8 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "user \"%s\", password \"%s\" at modulus %lu", user, pwstr,
-		      timestamp);
+		      "T=" APR_TIME_T_FMT ", user \"%s\", password \"%s\"",
+              timestamp, user, pwstr);
 #endif
 
 	apr_md5(hash, hashstr, strlen(hashstr));
