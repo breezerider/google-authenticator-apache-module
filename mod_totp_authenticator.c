@@ -111,7 +111,7 @@ is_digit_str(const char *val)
 	for (; *tmp; ++tmp)
 		if (!apr_isdigit(*tmp))
 			return *tmp;
-	return NULL;
+	return 0;
 }
 
 static char
@@ -121,7 +121,7 @@ is_alnum_str(const char *val)
 	for (; *tmp; ++tmp)
 		if (!apr_isalnum(*tmp))
 			return *tmp;
-	return NULL;
+	return 0;
 }
 
 /* Module configuration */
@@ -171,7 +171,7 @@ module AP_MODULE_DECLARE_DATA authn_totp_module;
 
 typedef struct {
 	char           *shared_key;
-	unsigned int    shared_key_len;
+	apr_size_t      shared_key_len;
 	bool            disallow_reuse;
 	unsigned char   window_size;
 	int             rate_limit_count;
