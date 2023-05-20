@@ -27,14 +27,9 @@
  * Oleksandr Ostrenko
  */
 
-#include "apr_strings.h"
-#include "apr_file_io.h"
-#include "apr_lib.h"		/* for apr_isalnum */
-#include "apr_md5.h"		/* for APR_MD5_DIGESTSIZE */
-#include "apr_sha1.h"
-
 #include "ap_config.h"
 #include "ap_provider.h"
+
 #include "httpd.h"
 #include "http_config.h"
 #include "http_core.h"
@@ -43,15 +38,23 @@
 #include "http_request.h"
 
 #include "mod_auth.h"
-#include "base32.h"
-#include "hmac.h"
-#include "sha1.h"
 
 #include "apu.h"
+
 #include "apr_general.h"
-#include "apr_base64.h"
+#include "apr_strings.h"
+#include "apr_file_io.h"    /* file IO routines */
+#include "apr_lib.h"		/* for apr_isalnum */
+#include "apr_md5.h"		/* for APR_MD5_DIGESTSIZE */
+#include "apr_sha1.h"
+#include "apr_mmap.h"
+#include "apr_base64.h"     /* for apr_pdecode_base32 */
 
 #include <stdbool.h>		/* for bool */
+
+/*#include "base32.h"*/
+#include "hmac.h"
+/*#include "sha1.h"*/
 
 #define DEBUG_TOTP_AUTH
 
@@ -73,15 +76,15 @@
 /**
   * \brief get_timestamp Get number of 30-second intervals since 00:00:00 January 1, 1970 UTC
  **/
-static unsigned long
+static apr_time_t
 get_timestamp()
 {
 	/* get number of microseconds since since 00:00:00 January 1, 1970 UTC */
-	apr_time_t      apr_time = apr_time_now();
-	apr_time /= 1000000; /* convert to seconds */
-	apr_time /= 30;      /* count number of 30-second intervals that have passed */
+	apr_time_t epoch_30sec = apr_time_now();
+	epoch_30sec /= 1000000; /* convert to seconds */
+	epoch_30sec /= 30;      /* count number of 30-second intervals that have passed */
 
-	return (apr_time);
+	return epoch_30sec;
 }
 
 static char    *
@@ -178,13 +181,15 @@ typedef struct {
 } totp_user_config;
 
 static apr_status_t
-totp_update_file_helper(request_rec *r, unsigned long timestamp,
-			unsigned long timedelta, const char *filepath,
-			const char *tmppath)
+totp_update_file_helper(request_rec *r, apr_time_t timestamp,
+			apr_interval_time_t timedelta, apr_size_t entry_size,
+			const char *filepath, const char *tmppath)
 {
 	apr_status_t    status;
 	apr_file_t     *tmp_file;
 	apr_file_t     *target_file;
+    apr_finfo_t     target_finfo;
+    apr_mmap_t     *target_mmap;
 
 	status = apr_file_open(&tmp_file,    /* temporary file handle */
 			       tmppath,              /* file name */
@@ -212,7 +217,7 @@ totp_update_file_helper(request_rec *r, unsigned long timestamp,
 			       r->pool	             /* memory pool to use */
 	    );
 
-	if (APR_SUCCESS != status) {
+	if ((APR_SUCCESS != status) && (APR_ENOENT != status)) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
 			      "totp_update_file_helper: could not open target file \"%s\"",
 			      filepath);
@@ -220,8 +225,33 @@ totp_update_file_helper(request_rec *r, unsigned long timestamp,
 		return status;
 	}
 
+	if (APR_ENOENT != status) {
+		/* Read current target file contents into a memory map */
+		if ((status = apr_file_info_get(&target_finfo, APR_FINFO_SIZE, target_file)) != APR_SUCCESS) {
+			ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+					"totp_update_file_helper: could not get target file \"%s\" size",
+					filepath);
+			apr_file_close(tmp_file);
+			return status;
+		}
+		if ((status = apr_mmap_create(&target_mmap, target_file, 0, target_finfo.size, APR_MMAP_READ, r->pool)) != APR_SUCCESS) {
+			ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+					"totp_update_file_helper: could not load target file \"%s\" into memory",
+					filepath);
+			apr_file_close(tmp_file);
+			return status;
+		}
+
+		/* close the target file once contents have been loaded into memory */
+		apr_file_close(target_file);
+
+		/* process the file contents */
+
+		/* delete the memory map */
+		apr_mmap_delete(target_mmap);
+	}
+
 	apr_file_close(tmp_file);
-	apr_file_close(target_file);
 
 	status = apr_file_rename(tmppath, filepath, r->pool);
 
@@ -252,7 +282,6 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 	char              line[MAX_STRING_LEN];
 	char              err_char;
 	unsigned int      line_len = 0, line_no = 0;
-	int               count = 0;
 	apr_status_t      status;
 	ap_configfile_t  *config_file;
 	totp_user_config *user_config = NULL;
@@ -352,20 +381,13 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
 			token = apr_pstrdup(r->pool, line);
 			line_len = strlen(token);
 
-			user_config->shared_key = apr_palloc(r->pool, line_len + 1);
-			memset(user_config->shared_key, 0, line_len);
+			user_config->shared_key = apr_pdecode_base32(r->pool, token, line_len, APR_ENCODE_NONE, &user_config->shared_key_len);
 
-			count =
-			    base32_decode(token, user_config->shared_key, line_len);
-			if (count < 0) {
-				memset(user_config->shared_key, 0, line_len);
+			if(!user_config->shared_key) {
 				ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-					      "get_user_totp_config: could not find a valid BASE32 encoded secret");
+					      "get_user_totp_config: could not find a valid BASE32 encoded secret at line %d",
+						  line_no);
 				return NULL;
-			} else {
-				memset(user_config->shared_key + count, 0,
-				       line_len + 1 - count);
-				user_config->shared_key_len = count;
 			}
 		}
 		/* Handle scratch codes */
@@ -405,7 +427,7 @@ get_user_totp_config(request_rec *r, totp_auth_config_rec *conf,
   * \return TOTP code
  **/
 static unsigned int
-generate_totp_code(unsigned long challenge, unsigned char *secret, int secret_len)
+generate_totp_code(unsigned long challenge, const char *secret, apr_size_t secret_len)
 {
 	unsigned char   hash[SHA1_DIGEST_LENGTH];
 	unsigned char   challenge_data[8];
@@ -486,7 +508,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	    ap_get_module_config(r->per_dir_config, &authn_totp_module);
 	totp_user_config *totp_config = NULL;
 	unsigned int    password_len = strlen(password);
-	unsigned long   timestamp = get_timestamp();
+	apr_time_t      timestamp = get_timestamp();
 	unsigned int    totp_code = 0;
 	unsigned int    user_code;
 	char            err_char;
@@ -617,7 +639,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 	    ap_get_module_config(r->per_dir_config, &authn_totp_module);
 
 	totp_user_config *totp_config = NULL;
-	unsigned long   timestamp = get_timestamp();
+	apr_time_t      timestamp = get_timestamp();
 	unsigned int    totp_code;
 	char           *hashstr;
 	char           *pwstr;
