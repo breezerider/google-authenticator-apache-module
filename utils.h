@@ -30,9 +30,11 @@
 #ifndef MOD_TOTP_AUTHN_UTIL_H
 #define MOD_TOTP_AUTHN_UTIL_H
 
+
+#include "http_request.h"
+
 #include "apr_general.h"
 #include "apr_time.h"       /* for apr_time_t */
-#include "apr_pools.h"      /* for apr_pool_t */
 #include "apr_lib.h"        /* for apr_isalnum, apr_isdigit */
 
 #include <stdbool.h>		/* for bool */
@@ -52,7 +54,7 @@
     _a < _b ? _a : _b;       \
 })
 
-bool
+static bool
 is_digit_str(const char *val)
 {
 	const char     *tmp = val;
@@ -62,7 +64,7 @@ is_digit_str(const char *val)
 	return true;
 }
 
-bool
+static bool
 is_alnum_str(const char *val)
 {
 	const char     *tmp = val;
@@ -107,7 +109,7 @@ typedef bool (*totp_file_helper_cb) (const void *new, const void *old, totp_file
   * \return Pointer to structure containing TOTP configuration for given user on success, NULL otherwise
  **/
 totp_user_config *
-totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool);
+totp_read_user_config(request_rec *r, const char *user, const char *token_dir);
 
 /**
   * \brief totp_check_n_update_file_helper Update file entries and apend new entry
@@ -121,7 +123,8 @@ totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool)
   * \return Pointer to structure containing TOTP configuration for given user on success, NULL otherwise
  **/
 apr_status_t
-totp_check_n_update_file_helper(const char *filepath, const void *entry, apr_size_t entry_size,
-			totp_file_helper_cb cb_check, totp_file_helper_cb_data *cb_data, apr_pool_t *pool);
+totp_check_n_update_file_helper(request_rec *r, const char *filepath, const void *entry, 
+            apr_size_t entry_size, totp_file_helper_cb cb_check,
+            totp_file_helper_cb_data *cb_data);
 
 #endif /* MOD_TOTP_AUTHN_UTIL_H */

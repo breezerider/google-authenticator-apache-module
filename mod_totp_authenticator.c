@@ -35,6 +35,7 @@
 
 #include "apr_general.h"
 #include "apr_strings.h"
+#include "apr_pools.h"      /* for apr_pool_t */
 #include "apr_md5.h"        /* for APR_MD5_DIGESTSIZE */
 #include "apr_sha1.h"       /* for APR_SHA1_DIGESTSIZE */
 
@@ -143,7 +144,7 @@ get_user_totp_config(request_rec *r, const char *user)
 		return NULL;
 	}
 
-	return totp_read_user_config(user, conf->tokenDir, r->pool);
+	return totp_read_user_config(r, user, conf->tokenDir);
 }
 
 /**
@@ -246,8 +247,8 @@ mark_code_invalid(request_rec *r, apr_time_t timestamp,
     login_data.timestamp = timestamp;
     login_data.totp_code = totp_code;
 	
-    status = totp_check_n_update_file_helper(code_filepath,
-            &login_data, sizeof(totp_login_rec), cb_check_code, &cb_data, r->pool);
+    status = totp_check_n_update_file_helper(r, code_filepath,
+            &login_data, sizeof(totp_login_rec), cb_check_code, &cb_data);
 	if (APR_SUCCESS != status) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
 			      "mark_code_invalid: could not update codes file \"%s\"",
@@ -317,8 +318,8 @@ check_rate_limit(request_rec *r, apr_time_t timestamp,
 	cb_data.conf = totp_config;
 	cb_data.res = 0;
 	
-    status = totp_check_n_update_file_helper(login_filepath,
-            &timestamp, sizeof(apr_time_t), cb_rate_limit, &cb_data, r->pool);
+    status = totp_check_n_update_file_helper(r, login_filepath,
+            &timestamp, sizeof(apr_time_t), cb_rate_limit, &cb_data);
 	if (APR_SUCCESS != status) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
 			      "check_rate_limit: could not update logins file \"%s\"",
@@ -345,12 +346,12 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "TOTP BASIC AUTH at timestamp=%" APR_TIME_T_FMT " user=\"%s\" password=\"%s\"",
-		      timestamp, user, password);
+		      "TOTP BASIC AUTH at timestamp=%" APR_TIME_T_FMT " totp_timestamp=%" APR_TIME_T_FMT
+		      timestamp, totp_timestamp);
 #endif
 
 	/* validate user name */
-	if (is_alnum_str(user)) {
+	if (!is_alnum_str(user)) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 			      "user name contains invalid character");
 		return AUTH_DENIED;
@@ -358,7 +359,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
 	/* validate password */
 	if ((password_len == 6) || (password_len == 8)) {
-		if (is_digit_str(password)) {
+		if (!is_digit_str(password)) {
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 				      "password contains invalid character");
 			return AUTH_DENIED;
