@@ -34,6 +34,8 @@
 #include "mod_auth.h"
 
 #include "apr_general.h"
+#include "apr_time.h"       /* for apr_time_t */
+#include "apr_lib.h"        /* for apr_isalnum, apr_isdigit */
 #include "apr_strings.h"    /* string manipulation routines */
 #include "apr_file_io.h"    /* file IO routines */
 #include "apr_mmap.h"       /* for apr_mmap_t */
@@ -46,8 +48,6 @@
 
 #include "hmac.h"
 /*#include "sha1.h"*/
-
-#include "utils.h"
 
 #define DEBUG_TOTP_AUTH
 
@@ -476,7 +476,6 @@ totp_check_n_update_file_helper(request_rec *r, const char *filepath,
 					ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
 							"totp_update_file_helper: entry %ld is kept, cb_data->res = %u",
 							entry_time, cb_data->res);
-						
                     bytes_written = entry_size;
 					if (((status = apr_file_write(tmp_file, file_data, &bytes_written)) != APR_SUCCESS) ||
                         (bytes_written != entry_size)) {
