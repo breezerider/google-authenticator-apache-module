@@ -552,7 +552,7 @@ bool cb_check_code(const void *new, const void *old, totp_file_helper_cb_data *d
 		totp_login_rec *pOld = (totp_login_rec *)old;
 
 		/* check if entry time is within time tolerance */
-		if((pNew->timestamp - pOld->timestamp) <= 3600) {
+		if((pNew->timestamp - pOld->timestamp) <= 3600 * 1000000) {
 			/* check if entry code matches current one */
 			if((pNew->totp_code == pOld->totp_code)&&data->conf->disallow_reuse)
 				data->res++;
@@ -616,7 +616,7 @@ mark_code_invalid(request_rec *r, totp_auth_config_rec *conf,
 	return (cb_data.res == 0);
 }
 
-/* TODO Authentication Helpers: Rate Limiting User Logins */
+/* Authentication Helpers: Rate Limiting User Logins */
 
 bool cb_rate_limit(const void *new, const void *old, totp_file_helper_cb_data *data)
 {
@@ -626,7 +626,7 @@ bool cb_rate_limit(const void *new, const void *old, totp_file_helper_cb_data *d
 
 		if(curr > prev) {
 			/* check if entry time is within time tolerance */
-			if((curr - prev) <= data->conf->rate_limit_seconds) {
+			if((curr - prev) <= data->conf->rate_limit_seconds * 1000000) {
 				data->res++;
 				return true;
 			}
