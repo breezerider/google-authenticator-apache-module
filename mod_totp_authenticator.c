@@ -174,8 +174,8 @@ typedef struct {
 	apr_size_t      shared_key_len;
 	bool            disallow_reuse;
 	unsigned char   window_size;
-	int             rate_limit_count;
-	int             rate_limit_seconds;
+	unsigned int    rate_limit_count;
+	apr_time_t      rate_limit_seconds;
 	unsigned int    scratch_codes[10];
 	unsigned char   scratch_codes_count;
 } totp_user_config;
@@ -547,12 +547,13 @@ typedef struct {
 bool cb_check_code(const void *new, const void *old, totp_file_helper_cb_data *data)
 {
 	if (old) {
+		static const apr_time_t timedelta = 3600000000; /* one hour */
 		/* check for an existing login entry with new TOTP code */
 		totp_login_rec *pNew = (totp_login_rec *)new;
 		totp_login_rec *pOld = (totp_login_rec *)old;
 
 		/* check if entry time is within time tolerance */
-		if((pNew->timestamp - pOld->timestamp) <= 3600 * 1000000) {
+		if((pNew->timestamp - pOld->timestamp) <= timedelta) {
 			/* check if entry code matches current one */
 			if((pNew->totp_code == pOld->totp_code)&&data->conf->disallow_reuse)
 				data->res++;
