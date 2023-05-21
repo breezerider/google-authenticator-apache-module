@@ -27,30 +27,18 @@
  * Oleksandr Ostrenko
  */
 
-#include "ap_config.h"
-#include "ap_provider.h"
-
 #include "httpd.h"
-#include "http_config.h"
-#include "http_core.h"
 #include "http_log.h"
-#include "http_protocol.h"
 #include "http_request.h"
 
 #include "mod_auth.h"
 
-#include "apu.h"
-
 #include "apr_general.h"
 #include "apr_strings.h"
-#include "apr_file_io.h"    /* file IO routines */
-#include "apr_lib.h"		/* for apr_isalnum */
-#include "apr_md5.h"		/* for APR_MD5_DIGESTSIZE */
-#include "apr_sha1.h"
-#include "apr_mmap.h"
-#include "apr_encode.h"     /* for apr_pdecode_base32 */
+#include "apr_md5.h"        /* for APR_MD5_DIGESTSIZE */
+#include "apr_sha1.h"       /* for APR_SHA1_DIGESTSIZE */
 
-#include <stdbool.h>		/* for bool */
+#include <stdbool.h>        /* for bool */
 
 #include "hmac.h"
 /*#include "sha1.h"*/
@@ -90,26 +78,6 @@ hex_encode(apr_pool_t *p, uint8_t *data, apr_size_t len)
 	*h = (char) 0;
 
 	return result;
-}
-
-static char
-is_digit_str(const char *val)
-{
-	const char     *tmp = val;
-	for (; *tmp; ++tmp)
-		if (!apr_isdigit(*tmp))
-			return *tmp;
-	return 0;
-}
-
-static char
-is_alnum_str(const char *val)
-{
-	const char     *tmp = val;
-	for (; *tmp; ++tmp)
-		if (!apr_isalnum(*tmp))
-			return *tmp;
-	return 0;
 }
 
 /* Module configuration */
@@ -369,13 +337,11 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	totp_auth_config_rec *conf =
 	    ap_get_module_config(r->per_dir_config, &authn_totp_module);
 	totp_user_config *totp_config = NULL;
-	unsigned int    password_len = strlen(password);
-	apr_time_t      timestamp = apr_time_now(), totp_timestamp = to_totp_timestamp(timestamp);
-	unsigned int    totp_code = 0;
-	unsigned int    user_code;
-	char            err_char;
-	const char     *tmp;
-	int             i;
+	unsigned int      password_len = strlen(password);
+	apr_time_t        timestamp = apr_time_now(), totp_timestamp = to_totp_timestamp(timestamp);
+	unsigned int      totp_code = 0;
+	unsigned int      user_code;
+	int               i;
 
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -384,27 +350,22 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #endif
 
 	/* validate user name */
-	err_char = is_alnum_str(user);
-	if (err_char) {
+	if (is_alnum_str(user)) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-			      "user \"%s\" contains invalid character '%c'",
-			      user, err_char);
+			      "user name contains invalid character");
 		return AUTH_DENIED;
 	}
 
 	/* validate password */
 	if ((password_len == 6) || (password_len == 8)) {
-		err_char = is_digit_str(password);
-		if (err_char) {
+		if (is_digit_str(password)) {
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-				      "password \"%s\" contains invalid character '%c'",
-				      password, err_char);
+				      "password contains invalid character");
 			return AUTH_DENIED;
 		}
 	} else {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-			      "password \"%s\" is not recognized as TOTP (6 digits) or scratch code (8 digits)",
-			      password);
+			      "password is not recognized as TOTP (6 digits) or scratch code (8 digits)");
 		return AUTH_DENIED;
 	}
 
@@ -424,7 +385,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #endif
 
 	/* check if user login count is within the rate limit */
-	if (!check_rate_limit(r, conf, timestamp, user, totp_config)) {
+	if (!check_rate_limit(r, timestamp, user, totp_config)) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 		      "login attemp for user \"%s\" exceeds rate limit",
 		      user);
@@ -451,7 +412,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #endif
 
 			if (totp_code == user_code) {
-				if (mark_code_invalid(r, conf, timestamp, user, totp_config, totp_code)) {
+				if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
 #ifdef DEBUG_TOTP_AUTH
 					ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 						      "access granted for user \"%s\" based on code \"%6.6u\"",
@@ -474,7 +435,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 				      totp_config->scratch_codes[i], user_code);
 #endif
 			if (totp_config->scratch_codes[i] == user_code) {
-				if (mark_code_invalid(r, conf, timestamp, user, totp_config, totp_config->scratch_codes[i])) {
+				if (mark_code_invalid(r, timestamp, user, totp_config, totp_config->scratch_codes[i])) {
 #ifdef DEBUG_TOTP_AUTH
 					ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 						      "access granted for user \"%s\" based on scratch code \"%8.8u\"",

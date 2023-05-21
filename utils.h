@@ -30,8 +30,12 @@
 #ifndef MOD_TOTP_AUTHN_UTIL_H
 #define MOD_TOTP_AUTHN_UTIL_H
 
-#include "apr_time.h"
-#include "apr_pools.h"
+#include "apr_general.h"
+#include "apr_time.h"       /* for apr_time_t */
+#include "apr_pools.h"      /* for apr_pool_t */
+#include "apr_lib.h"        /* for apr_isalnum, apr_isdigit */
+
+#include <stdbool.h>		/* for bool */
 
  /* Helper functions */
 #define max(a,b)             \
@@ -47,6 +51,26 @@
     __typeof__ (b) _b = (b); \
     _a < _b ? _a : _b;       \
 })
+
+bool
+is_digit_str(const char *val)
+{
+	const char     *tmp = val;
+	for (; *tmp; ++tmp)
+		if (!apr_isdigit(*tmp))
+			return false;
+	return true;
+}
+
+bool
+is_alnum_str(const char *val)
+{
+	const char     *tmp = val;
+	for (; *tmp; ++tmp)
+		if (!apr_isalnum(*tmp))
+			return false;
+	return true;
+}
 
 /* Authentication Helpers */
 typedef struct {
@@ -96,7 +120,7 @@ totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool)
   * \param pool APR pool 
   * \return Pointer to structure containing TOTP configuration for given user on success, NULL otherwise
  **/
-static apr_status_t
+apr_status_t
 totp_check_n_update_file_helper(const char *filepath, const void *entry, apr_size_t entry_size,
 			totp_file_helper_cb cb_check, totp_file_helper_cb_data *cb_data, apr_pool_t *pool);
 

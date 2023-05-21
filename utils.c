@@ -1,6 +1,11 @@
 #include "utils.h"
 
-#include "ap_config.h"
+#include "httpd.h"
+#include "http_log.h"
+
+#include "apr_file_io.h"    /* file IO routines */
+#include "apr_mmap.h"       /* for apr_mmap_t */
+#include "apr_encode.h"     /* for apr_pdecode_base32 */
 
 /**
   * Based on the given username, get the users TOTP configuration
@@ -18,13 +23,13 @@ totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool)
 	ap_configfile_t  *config_file;
 	totp_user_config *user_config = NULL;
 
-	config_filename = apr_psprintf(pool, "%s/%s", token_dir, username);
+	config_filename = apr_psprintf(pool, "%s/%s", token_dir, user);
 
 	status = ap_pcfg_openfile(&config_file, pool, config_filename);
 
 	if (status != APR_SUCCESS) {
 		ap_log_perror(APLOG_MARK, APLOG_ERR, status, pool,
-			      "read_user_totp_config: could not open user configuration file: %s",
+			      "read_user_totp_config: could not open user configuration file \"%s\"",
 			      config_filename);
 		return NULL;
 	}
@@ -47,14 +52,12 @@ totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool)
 				} else if (0 == apr_strnatcmp(token, "WINDOW_SIZE")) {
 					token = apr_strtok(NULL, psep, &last);
 
-					err_char = is_digit_str(token);
-					if (err_char)
+					if (!is_digit_str(token))
 						ap_log_perror(APLOG_MARK,
 							      APLOG_ERR,
 							      0, pool,
-							      "read_user_totp_config: window size value '%s' contains invalid character %c at line %d",
-							      token, err_char,
-							      line_no);
+							      "read_user_totp_config: window size value \"%s\" contains invalid characters at line %d",
+							      token, line_no);
 					else
 						user_config->window_size =
 						    max(0,
@@ -62,14 +65,12 @@ totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool)
 				} else if (0 == apr_strnatcmp(token, "RATE_LIMIT")) {
 					token = apr_strtok(NULL, psep, &last);
 
-					err_char = is_digit_str(token);
-					if (err_char)
+					if (!is_digit_str(token))
 						ap_log_perror(APLOG_MARK,
 							      APLOG_ERR,
 							      0, pool,
-							      "read_user_totp_config: rate limit count value '%s' contains invalid character %c at line %d",
-							      token, err_char,
-							      line_no);
+							      "read_user_totp_config: rate limit count value \"%s\" contains invalid characters at line %d",
+							      token, line_no);
 					else
 						user_config->rate_limit_count =
 						    max(0,
@@ -77,15 +78,13 @@ totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool)
 
 					token = apr_strtok(NULL, psep, &last);
 
-					err_char = is_digit_str(token);
-					if (err_char) {
+					if (!is_digit_str(token)) {
 						user_config->rate_limit_count = 0;
 						ap_log_perror(APLOG_MARK,
 							      APLOG_ERR,
 							      0, pool,
-							      "read_user_totp_config: rate limit seconds value '%s' contains invalid character %c at line %d",
-							      token, err_char,
-							      line_no);
+							      "read_user_totp_config: rate limit seconds value \"%s\" contains invalid characters at line %d",
+							      token, line_no);
 					} else
 						user_config->rate_limit_seconds =
 						    max(0,
@@ -122,18 +121,17 @@ totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool)
 			line_len = strlen(token);
 
 			/* validate scratch code */
-			err_char = is_digit_str(token);
-			if (err_char)
+			if (!is_digit_str(token))
 				ap_log_perror(APLOG_MARK, APLOG_ERR, 0, pool,
-					      "read_user_totp_config: scratch code '%s' contains invalid character %c at line %d",
-					      line, err_char, line_no);
+					      "read_user_totp_config: scratch code \"%s\" contains invalid characters and was skipped at line %d",
+					      line, line_no);
 			else if (user_config->scratch_codes_count < 10)
 				user_config->
 				    scratch_codes[user_config->scratch_codes_count++]
 				    = apr_atoi64(token);
 			else
 				ap_log_perror(APLOG_MARK, APLOG_ERR, 0, pool,
-					      "read_user_totp_config: scratch code '%s' at line %d was skipped, only 10 scratch codes per user are supported",
+					      "read_user_totp_config: scratch code \"%s\" at line %d was skipped, only 10 scratch codes per user are supported",
 					      line, line_no);
 		}
 	}
@@ -147,7 +145,7 @@ totp_read_user_config(const char *user, const char *token_dir, apr_pool_t *pool)
 /**
   * Update file entries and apend new entry
  **/
-static apr_status_t
+apr_status_t
 totp_check_n_update_file_helper(const char *filepath, const void *entry, apr_size_t entry_size,
 			totp_file_helper_cb cb_check, totp_file_helper_cb_data *cb_data, apr_pool_t *pool)
 {
@@ -243,7 +241,7 @@ totp_check_n_update_file_helper(const char *filepath, const void *entry, apr_siz
 						return status;
 					}
 				} else {
-					ap_log_[error(APLOG_MARK, APLOG_DEBUG, 0, pool,
+					ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, pool,
 							"totp_update_file_helper: entry %ld is NOT kept, cb_data->res = %u",
 							entry_time, cb_data->res);
 				}
@@ -281,7 +279,7 @@ totp_check_n_update_file_helper(const char *filepath, const void *entry, apr_siz
 
 	apr_file_close(tmp_file);
 
-	status = apr_file_rename(tmp_filepath, filepath, r->pool);
+	status = apr_file_rename(tmp_filepath, filepath, pool);
 	if (APR_SUCCESS != status) {
 		ap_log_perror(APLOG_MARK, APLOG_ERR, status, pool,
 			      "totp_update_file_helper: unable to move file \"%s\" to \"%s\"",
