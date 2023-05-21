@@ -81,7 +81,6 @@
 static apr_time_t
 to_totp_timestamp(apr_time_t ts)
 {
-	/* get  */
 	ts /= 1000000; /* convert to seconds */
 	ts /= 30;      /* count number of 30-second intervals that have passed */
 
@@ -171,7 +170,7 @@ module AP_MODULE_DECLARE_DATA authn_totp_module;
 /* Authentication Helpers */
 
 typedef struct {
-	char           *shared_key;
+	const char     *shared_key;
 	apr_size_t      shared_key_len;
 	bool            disallow_reuse;
 	unsigned char   window_size;
@@ -567,7 +566,7 @@ bool cb_check_code(const void *new, const void *old, totp_file_helper_cb_data *d
 }
 
 /**
-  * \brief mark_code_invalid Mark a code invalid
+  * \brief mark_code_invalid Mark a TOTP code invalid
   * \param r Request
   * \param conf Pointer to TOTP authentication configuration record
   * \param timestamp Timestamp for login event
@@ -639,6 +638,54 @@ bool cb_rate_limit(const void *new, const void *old, totp_file_helper_cb_data *d
 	}
 }
 
+/**
+  * \brief check_rate_limit Check if a user's login attempt is still within the rate limit
+  * \param r Request
+  * \param conf Pointer to TOTP authentication configuration record
+  * \param timestamp Timestamp for login event
+  * \param username Authenticating user name
+  * \param totp_code Authenticating TOTP code
+  * \return true upon success, false otherwise
+ **/
+static bool
+check_rate_limit(request_rec *r, totp_auth_config_rec *conf,
+          apr_time_t timestamp, const char *user, 
+          totp_user_config *totp_config)
+{
+	char           *login_filepath;
+	apr_status_t    status;
+	totp_file_helper_cb_data cb_data;
+
+	/* return immediately if no rate limit is defined */
+	if(totp_config->rate_limit_count == 0)
+		return true;
+
+	if (!conf->stateDir) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+			      "check_rate_limit: TOTPAuthStateDir is not defined");
+		return false;
+	}
+
+	/* set code file path */
+	login_filepath =
+	    apr_psprintf(r->pool, "%s/%s.logins", conf->stateDir, user);
+
+	/* initialize callback data */
+	cb_data.conf = totp_config;
+	cb_data.res = 0;
+	
+    status = totp_check_n_update_file_helper(r, login_filepath,
+            &timestamp, sizeof(apr_time_t), cb_rate_limit, &cb_data);
+	if (APR_SUCCESS != status) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+			      "check_rate_limit: could not update logins file \"%s\"",
+			      login_filepath);
+		return false;
+	}
+
+	return (cb_data.res <= totp_config->rate_limit_count);
+}
+
 /* Authentication Functions */
 
 static          authn_status
@@ -665,7 +712,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	err_char = is_alnum_str(user);
 	if (err_char) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-			      "user '%s' contains invalid character %c",
+			      "user \"%s\" contains invalid character '%c'",
 			      user, err_char);
 		return AUTH_DENIED;
 	}
@@ -675,13 +722,13 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 		err_char = is_digit_str(password);
 		if (err_char) {
 			ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-				      "password '%s' contains invalid character %c",
+				      "password \"%s\" contains invalid character '%c'",
 				      password, err_char);
 			return AUTH_DENIED;
 		}
 	} else {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-			      "password '%s' is not recognized as TOTP (6 digits) or scratch code (8 digits)",
+			      "password \"%s\" is not recognized as TOTP (6 digits) or scratch code (8 digits)",
 			      password);
 		return AUTH_DENIED;
 	}
@@ -697,9 +744,17 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 	}
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "secret key is \"%s\", secret length: %d",
+		      "secret key is \"%s\", secret length: %ld",
 		      totp_config->shared_key, totp_config->shared_key_len);
 #endif
+
+	/* check if user login count is within the rate limit */
+	if (!check_rate_limit(r, conf, timestamp, user, totp_config)) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+		      "login attemp for user \"%s\" exceeds rate limit",
+		      user);
+		return AUTH_DENIED;
+	}
 
 	/***
 	 *** Perform TOTP Authentication
@@ -796,7 +851,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 	err_char = is_alnum_str(user);
 	if (err_char) {
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-			      "user '%s' contains invalid character %c",
+			      "user \"%s\" contains invalid character '%c'",
 			      user, err_char);
 		return AUTH_USER_NOT_FOUND;
 	}
@@ -812,7 +867,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 	}
 #ifdef DEBUG_TOTP_AUTH
 	ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-		      "secret key is \"%s\", secret length: %d",
+		      "secret key is \"%s\", secret length: %ld",
 		      totp_config->shared_key, totp_config->shared_key_len);
 #endif
 
