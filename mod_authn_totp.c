@@ -46,7 +46,7 @@
 
 #include <stdbool.h>        /* for bool */
 
-#include "hmac.h"
+/*#include "hmac.h"*/
 /*#include "sha1.h"*/
 
 #define DEBUG_TOTP_AUTH
@@ -116,6 +116,65 @@ hex_encode(apr_pool_t *p, uint8_t *data, apr_size_t len)
 	*h = (char) 0;
 
 	return result;
+}
+
+void hmac_sha1(const unsigned char *key, unsigned int keyLength,
+               const unsigned char *data, unsigned int dataLength,
+               char unsigned *result, unsigned int resultLength) {
+    int i;
+  apr_sha1_ctx_t ctx;
+
+  unsigned char sha[APR_SHA1_DIGESTSIZE];
+  unsigned char tmp_key[64];
+  unsigned char hashed_key[APR_SHA1_DIGESTSIZE];
+
+  if (keyLength > 64) {
+    // The key can be no bigger than 64 bytes. If it is, we'll hash it down to
+    // 20 bytes.
+    apr_sha1_init(&ctx);
+    apr_sha1_update(&ctx, key, keyLength);
+    apr_sha1_final(hashed_key, &ctx);
+    key = hashed_key;
+    keyLength = APR_SHA1_DIGESTSIZE;
+  }
+
+  // The key for the inner digest is derived from our key, by padding the key
+  // the full length of 64 bytes, and then XOR'ing each byte with 0x36.
+  for (i = 0; i < keyLength; ++i) {
+    tmp_key[i] = key[i] ^ 0x36;
+  }
+  memset(tmp_key + keyLength, 0x36, 64 - keyLength);
+
+  // Compute inner digest
+  apr_sha1_init(&ctx);
+  apr_sha1_update(&ctx, tmp_key, 64);
+  apr_sha1_update(&ctx, data, dataLength);
+  apr_sha1_final(sha, &ctx);
+
+  // The key for the outer digest is derived from our key, by padding the key
+  // the full length of 64 bytes, and then XOR'ing each byte with 0x5C.
+  for (i = 0; i < keyLength; ++i) {
+    tmp_key[i] = key[i] ^ 0x5C;
+  }
+  memset(tmp_key + keyLength, 0x5C, 64 - keyLength);
+
+  // Compute outer digest
+  apr_sha1_init(&ctx);
+  apr_sha1_update(&ctx, tmp_key, 64);
+  apr_sha1_update(&ctx, sha, APR_SHA1_DIGESTSIZE);
+  apr_sha1_final(sha, &ctx);
+
+  // Copy result to output buffer and truncate or pad as necessary
+  memset(result, 0, resultLength);
+  if (resultLength > APR_SHA1_DIGESTSIZE) {
+    resultLength = APR_SHA1_DIGESTSIZE;
+  }
+  memcpy(result, sha, resultLength);
+
+  // Zero out all internal data structures
+  memset(hashed_key, 0, sizeof(hashed_key));
+  memset(sha, 0, sizeof(sha));
+  memset(tmp_key, 0, sizeof(tmp_key));
 }
 
 /* Module configuration */
