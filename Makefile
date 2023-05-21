@@ -1,7 +1,6 @@
 APXS=apxs
 SOURCE= \
   mod_totp_authenticator.c \
-  utils.c \
   include/hmac.c \
   include/sha1.c 
 
