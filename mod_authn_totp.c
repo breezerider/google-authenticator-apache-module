@@ -587,6 +587,107 @@ totp_check_n_update_file_helper(request_rec *r, const char *filepath,
     return APR_SUCCESS;
 }
 
+/* Authentication Helpers: Notes Auth */
+
+static const char *
+totp_get_authn_token(request_rec *r, apr_time_t timestamp,
+                const char *user, totp_user_config *totp_config,
+                unsigned int totp_code)
+{
+    unsigned char   hash[APR_SHA1_DIGESTSIZE];
+    const size_t    challenge_size = sizeof(apr_time_t);
+    unsigned char   challenge_data[sizeof(apr_time_t)];
+    int             j;
+    const char*     token;
+    const char*     challenge;
+
+    for (j = challenge_size; j--; timestamp >>= 8)
+        challenge_data[j] = timestamp;
+
+    hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash,
+              APR_SHA1_DIGESTSIZE);
+
+    token = apr_pencode_base16_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_NONE, NULL);
+    challenge = apr_pencode_base16_binary(r->pool, challenge_data, challenge_size, APR_ENCODE_NONE, NULL);
+
+    token = apr_pstrcat(r->pool, challenge, ".", token, NULL);
+
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, status, r,
+                  "totp_get_authn_token: user \"%s\", timestamp=%" ", token=\"%s\"",
+                  user, timestamp, token);
+
+    return token;
+}
+
+/**
+ * Set the auth username and password into the main request
+ * notes table.
+ */
+static void set_notes_auth(request_rec * r,
+                           const char *user, const char *token)
+{
+    apr_table_t *notes = NULL;
+    const char *authname;
+
+    /* find the main request */
+    while (r->main) {
+        r = r->main;
+    }
+    /* find the first redirect */
+    while (r->prev) {
+        r = r->prev;
+    }
+    notes = r->notes;
+
+    authname = ap_auth_name(r);
+    if (user) {
+        apr_table_setn(notes, apr_pstrcat(r->pool, authname, "-user", NULL), user);
+    }
+    if (token) {
+        apr_table_setn(notes, apr_pstrcat(r->pool, authname, "-totp-token", NULL), token);
+    }
+
+}
+
+/**
+ * Get the auth username and password from the main request
+ * notes table, if present.
+ */
+static void get_notes_auth(request_rec *r,
+                           const char **user, const char **token)
+{
+    const char *authname;
+    request_rec *m = r;
+
+    /* find the main request */
+    while (m->main) {
+        m = m->main;
+    }
+    /* find the first redirect */
+    while (m->prev) {
+        m = m->prev;
+    }
+
+    /* have we isolated the user and pw before? */
+    authname = ap_auth_name(m);
+    if (user) {
+        *user = (char *) apr_table_get(m->notes, apr_pstrcat(m->pool, authname, "-user", NULL));
+    }
+    if (token) {
+        *token = (char *) apr_table_get(m->notes, apr_pstrcat(m->pool, authname, "-totp-token", NULL));
+    }
+
+    /* set the user, even though the user is unauthenticated at this point */
+    if (user && *user) {
+        r->user = (char *) *user;
+    }
+
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                  "from notes: user: %s, token: %s",
+                  user ? *user : "<null>", token ? *token : "<null>");
+
+}
+
 /* Authentication Helpers: Disallow TOTP Code Reuse */
 
 typedef struct {
