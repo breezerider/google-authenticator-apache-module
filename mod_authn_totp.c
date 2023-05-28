@@ -46,9 +46,6 @@
 
 #include <stdbool.h>            /* for bool */
 
-/*#include "hmac.h"*/
-/*#include "sha1.h"*/
-
 #define DEBUG_TOTP_AUTH
 
 /* Helper functions */
@@ -95,35 +92,8 @@ is_alnum_str(const char *val)
 static          apr_time_t
 to_totp_timestamp(apr_time_t ts)
 {
-    ts /= 1000000;              /* convert to seconds */
-    ts /= 30;                   /* count number of 30-second intervals that have
-                                 * passed */
-
-    return ts;
-}
-
-/**
-  * \brief hex_encode Encode numeric data into a string of hexademical numbers
-  * \param p APR pool
-  * \param data Input data array
-  * \param len Input data length
-  * \return A string of hexademical numbers representing the input data array
- **/
-static char    *
-hex_encode(apr_pool_t *p, uint8_t *data, apr_size_t len)
-{
-    const char     *hex = "0123456789abcdef";
-    char           *result = apr_palloc(p, (len * 2) + 1);
-    int             idx;
-    char           *h = result;
-
-    for (idx = 0; idx < len; idx++) {
-        *h++ = hex[data[idx] >> 4];
-        *h++ = hex[data[idx] & 0xF];
-    }
-    *h = (char) 0;
-
-    return result;
+    /* count number of 30-second intervals */
+    return apr_time_sec(ts) / 30; 
 }
 
 /**
@@ -794,20 +764,20 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
     /* validate user name */
     if (!is_alnum_str(user)) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "user name contains invalid character");
-        return AUTH_DENIED;
+                      "user name contains non-alphanumeric characters");
+        return AUTH_USER_NOT_FOUND;
     }
 
     /* validate password */
     if ((password_len == 6) || (password_len == 8)) {
         if (!is_digit_str(password)) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                          "password contains invalid character");
+                          "password contains non-digit characters");
             return AUTH_DENIED;
         }
     } else {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "password is not recognized as TOTP (6 digits) or scratch code (8 digits)");
+                      "password is not recognized as a TOTP (6 digits) or scratch code (8 digits)");
         return AUTH_DENIED;
     }
 
@@ -817,7 +787,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "could not find TOTP configuration for user \"%s\"", user);
 #endif
-        return AUTH_DENIED;
+        return AUTH_USER_NOT_FOUND;
     }
 #ifdef DEBUG_TOTP_AUTH
     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -948,8 +918,6 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
                   totp_config->shared_key, totp_config->shared_key_len);
 #endif
 
-    hash = apr_palloc(r->pool, APR_MD5_DIGESTSIZE);
-
     totp_code =
         generate_totp_code(totp_timestamp, totp_config->shared_key,
                            totp_config->shared_key_len);
@@ -963,8 +931,9 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
                   timestamp, user, pwstr);
 #endif
 
+    hash = apr_palloc(r->pool, APR_MD5_DIGESTSIZE);
     apr_md5(hash, hashstr, strlen(hashstr));
-    *rethash = hex_encode(r->pool, hash, APR_MD5_DIGESTSIZE);
+    *rethash = apr_pencode_base16_binary(r->pool, hash, APR_MD5_DIGESTSIZE, APR_ENCODE_NONE, NULL);
 
     return AUTH_USER_FOUND;
 }
