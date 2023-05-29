@@ -616,8 +616,7 @@ totp_parse_authn_token(request_rec *r, const char * token,
                        apr_time_t *timestamp, unsigned char **hash)
 {
     const char     *psep = ".";
-    char           *token, *last;
-    const char*     value;
+    char           *value, *last;
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                   "totp_parse_authn_token: parsing token \"%s\"",
@@ -625,7 +624,7 @@ totp_parse_authn_token(request_rec *r, const char * token,
 
     value = apr_strtok(token, psep, &last);
     if (value != NULL) {
-        value = apr_pdecode_base64_binary(r->pool, token, APR_ENCODE_STRING, APR_ENCODE_NONE, NULL);
+        value = apr_pdecode_base64_binary(r->pool, value, APR_ENCODE_STRING, APR_ENCODE_NONE, NULL);
         if (!value||!is_digit_str(value)) {
             ap_log_rerror(APLOG_MARK,
                           APLOG_ERR,
@@ -644,7 +643,7 @@ totp_parse_authn_token(request_rec *r, const char * token,
                           "totp_parse_authn_token: hash string is absent");
             return false;
         } else if (hash)
-            *hash = apr_pdecode_base64_binary(r->pool, token, APR_ENCODE_STRING, APR_ENCODE_NONE, NULL);
+            *hash = apr_pdecode_base64_binary(r->pool, value, APR_ENCODE_STRING, APR_ENCODE_NONE, NULL);
     } else {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                     "totp_parse_authn_token: token \"%s\" does not contain a dot",
