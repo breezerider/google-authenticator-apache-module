@@ -369,20 +369,20 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
 }
 
 /**
-  * \brief get_user_totp_config Based on the given username, get the users TOTP configuration
+  * \brief totp_get_user_config Based on the given username, get the users TOTP configuration
   * \param r Request
   * \param user User name
   * \return Pointer to structure containing TOTP configuration for given user on success, NULL otherwise
  **/
 static totp_user_config *
-get_user_totp_config(request_rec *r, const char *user)
+totp_get_user_config(request_rec *r, const char *user)
 {
     totp_auth_config_rec *conf =
         ap_get_module_config(r->per_dir_config, &authn_totp_module);
 
     if (!conf->tokenDir) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "get_user_totp_config: TOTPAuthTokenDir is not defined");
+                      "totp_get_user_config: TOTPAuthTokenDir is not defined");
         return NULL;
     }
 
@@ -390,14 +390,14 @@ get_user_totp_config(request_rec *r, const char *user)
 }
 
 /**
-  * \brief generate_totp_code Generate a one time password using shared secret and timestamp
+  * \brief totp_generate_code Generate a one time password using shared secret and timestamp
   * \param timestamp Unix timestamp
   * \param secret Shared secret key.
   * \param secret_len Length of the secret key.
   * \return TOTP code
  **/
 static unsigned int
-generate_totp_code(apr_time_t timestamp, const char *secret, apr_size_t secret_len)
+totp_generate_code(apr_time_t timestamp, const char *secret, apr_size_t secret_len)
 {
     unsigned char   hash[APR_SHA1_DIGESTSIZE];
     const size_t    challenge_size = sizeof(apr_time_t);
@@ -591,30 +591,29 @@ totp_check_n_update_file_helper(request_rec *r, const char *filepath,
 
 static const char *
 totp_get_authn_token(request_rec *r, apr_time_t timestamp,
-                const char *user, totp_user_config *totp_config,
-                unsigned int totp_code)
+                const char *user, unsigned int totp_code)
 {
     unsigned char   hash[APR_SHA1_DIGESTSIZE];
-    const size_t    challenge_size = sizeof(apr_time_t);
-    unsigned char   challenge_data[sizeof(apr_time_t)];
-    int             j;
-    const char*     token;
+    const size_t    challenge_size = sizeof(unsigned int);
+    unsigned char   challenge_data[sizeof(unsigned int)];
     const char*     challenge;
+    const char*     token;
+    int             j;
 
-    for (j = challenge_size; j--; timestamp >>= 8)
-        challenge_data[j] = timestamp;
+    for (j = challenge_size; j--; totp_code >>= 8)
+        challenge_data[j] = totp_code;
 
     hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash,
               APR_SHA1_DIGESTSIZE);
 
-    token = apr_pencode_base16_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_NONE, NULL);
-    challenge = apr_pencode_base16_binary(r->pool, challenge_data, challenge_size, APR_ENCODE_NONE, NULL);
+    token = apr_pencode_base64_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_NONE, NULL);
+    challenge = apr_pencode_base64_binary(r->pool, challenge_data, challenge_size, APR_ENCODE_NONE, NULL);
 
     token = apr_pstrcat(r->pool, challenge, ".", token, NULL);
 
-    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, status, r,
-                  "totp_get_authn_token: user \"%s\", timestamp=%" ", token=\"%s\"",
-                  user, timestamp, token);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "totp_get_authn_token: time %" APR_TIME_T_FMT ", user \"%s\", token \"%s\"",
+                  timestamp, user, token);
 
     return token;
 }
@@ -682,7 +681,7 @@ static void get_notes_auth(request_rec *r,
         r->user = (char *) *user;
     }
 
-    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                   "from notes: user: %s, token: %s",
                   user ? *user : "<null>", token ? *token : "<null>");
 
@@ -882,7 +881,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
         return AUTH_DENIED;
     }
 
-    totp_config = get_user_totp_config(r, user);
+    totp_config = totp_get_user_config(r, user);
     if (!totp_config) {
 #ifdef DEBUG_TOTP_AUTH
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -911,7 +910,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
     if (password_len == 6) {
         for (i = -(totp_config->window_size); i <= (totp_config->window_size); ++i) {
             totp_code =
-                generate_totp_code(totp_timestamp + i,
+                totp_generate_code(totp_timestamp + i,
                                    totp_config->shared_key,
                                    totp_config->shared_key_len);
 
@@ -924,6 +923,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
             if (totp_code == user_code) {
                 if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
+                    totp_get_authn_token(r, timestamp, user, totp_code);
 #ifdef DEBUG_TOTP_AUTH
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                                   "access granted for user \"%s\" based on code \"%6.6u\"",
@@ -949,6 +949,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
                 if (mark_code_invalid
                     (r, timestamp, user, totp_config,
                      totp_config->scratch_codes[i])) {
+                    totp_get_authn_token(r, timestamp, user, totp_config->scratch_codes[i]);
 #ifdef DEBUG_TOTP_AUTH
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                                   "access granted for user \"%s\" based on scratch code \"%8.8u\"",
@@ -1005,7 +1006,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
         return AUTH_USER_NOT_FOUND;
     }
 
-    totp_config = get_user_totp_config(r, user);
+    totp_config = totp_get_user_config(r, user);
     if (!totp_config) {
 #ifdef DEBUG_TOTP_AUTH
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -1020,7 +1021,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 #endif
 
     totp_code =
-        generate_totp_code(totp_timestamp, totp_config->shared_key,
+        totp_generate_code(totp_timestamp, totp_config->shared_key,
                            totp_config->shared_key_len);
 
     pwstr = apr_psprintf(r->pool, "%6.6u", totp_code);
