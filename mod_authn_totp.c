@@ -397,7 +397,7 @@ totp_get_user_config(request_rec *r, const char *user)
   * \return TOTP code
  **/
 static unsigned int
-totp_generate_code(apr_time_t timestamp, const char *secret, apr_size_t secret_len)
+totp_generate_code(apr_time_t timestamp, const char *secret, apr_size_t secret_len, char **hash_out)
 {
     unsigned char   hash[APR_SHA1_DIGESTSIZE];
     const size_t    challenge_size = sizeof(apr_time_t);
@@ -410,6 +410,8 @@ totp_generate_code(apr_time_t timestamp, const char *secret, apr_size_t secret_l
 
     hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash,
               APR_SHA1_DIGESTSIZE);
+    if (hash_out)
+        memcpy(hash, *hash_out, APR_SHA1_DIGESTSIZE)
     offset = hash[APR_SHA1_DIGESTSIZE - 1] & 0xF;
     for (j = 0; j < 4; ++j) {
         totp_code <<= 8;
@@ -591,29 +593,19 @@ totp_check_n_update_file_helper(request_rec *r, const char *filepath,
 
 static const char *
 totp_get_authn_token(request_rec *r, apr_time_t timestamp,
-                const char *user, unsigned int totp_code)
+                     const unsigned char *hash)
 {
-    unsigned char   hash[APR_SHA1_DIGESTSIZE];
-    const size_t    challenge_size = sizeof(unsigned int);
-    unsigned char   challenge_data[sizeof(unsigned int)];
     const char*     challenge;
     const char*     token;
-    int             j;
-
-    for (j = challenge_size; j--; totp_code >>= 8)
-        challenge_data[j] = totp_code;
-
-    hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash,
-              APR_SHA1_DIGESTSIZE);
-
+ 
     token = apr_pencode_base64_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_NONE, NULL);
-    challenge = apr_pencode_base64_binary(r->pool, challenge_data, challenge_size, APR_ENCODE_NONE, NULL);
+    challenge = apr_pencode_base64_binary(r->pool, &timestamp, sizeof(apr_time_t), APR_ENCODE_NONE, NULL);
 
     token = apr_pstrcat(r->pool, challenge, ".", token, NULL);
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "totp_get_authn_token: time %" APR_TIME_T_FMT ", user \"%s\", token \"%s\"",
-                  timestamp, user, token);
+                  "totp_get_authn_token: time %" APR_TIME_T_FMT ", token \"%s\"",
+                  timestamp, token);
 
     return token;
 }
@@ -849,8 +841,9 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
         ap_get_module_config(r->per_dir_config, &authn_totp_module);
     totp_user_config *totp_config = NULL;
     unsigned int    password_len = strlen(password);
-    apr_time_t      timestamp = apr_time_now(), totp_timestamp =
-        to_totp_timestamp(timestamp);
+    apr_time_t      timestamp = apr_time_now();
+    apr_time_t      totp_timestamp = to_totp_timestamp(timestamp);
+    unsigned char * hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
     unsigned int    totp_code = 0;
     unsigned int    user_code;
     int             i;
@@ -912,7 +905,8 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
             totp_code =
                 totp_generate_code(totp_timestamp + i,
                                    totp_config->shared_key,
-                                   totp_config->shared_key_len);
+                                   totp_config->shared_key_len,
+                                   &hash);
 
 #ifdef DEBUG_TOTP_AUTH
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -923,7 +917,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
             if (totp_code == user_code) {
                 if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
-                    totp_get_authn_token(r, timestamp, user, totp_code);
+                    totp_get_authn_token(r, timestamp, hash);
 #ifdef DEBUG_TOTP_AUTH
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                                   "access granted for user \"%s\" based on code \"%6.6u\"",
@@ -949,7 +943,6 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
                 if (mark_code_invalid
                     (r, timestamp, user, totp_config,
                      totp_config->scratch_codes[i])) {
-                    totp_get_authn_token(r, timestamp, user, totp_config->scratch_codes[i]);
 #ifdef DEBUG_TOTP_AUTH
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                                   "access granted for user \"%s\" based on scratch code \"%8.8u\"",
