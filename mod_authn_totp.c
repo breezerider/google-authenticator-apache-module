@@ -1110,7 +1110,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 /**
  * Check user's TOTP authentication token
  */
-static int authenticate_form_authn(request_rec * r)
+static int authn_totp_check_authn(request_rec * r)
 {
     totp_auth_config_rec *conf =
         ap_get_module_config(r->per_dir_config, &authn_totp_module);
@@ -1120,27 +1120,28 @@ static int authenticate_form_authn(request_rec * r)
     const char *sent_user = NULL, *sent_token = NULL;
 
     unsigned char *hash, sent_hash;
+    unsigned int   totp_code;
     apr_time_t     timestamp, totp_timestamp;
     apr_status_t   status;
 
     get_notes_auth(r, &sent_user, &sent_token);
     if(sent_user && sent_token) {
-        hash_sent = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
-        if(totp_parse_authn_token(r, token, &timestamp, &hash_sent)) {
+        sent_hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
+        if(totp_parse_authn_token(r, token, &timestamp, &sent_hash)) {
             
             totp_timestamp = to_totp_timestamp(timestamp);
             
             /* validate user name */
-            if(!is_alnum_str(user)) {
+            if(!is_alnum_str(sent_user)) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "authenticate_form_authn: user name contains non-alphanumeric characters");
+                              "authn_totp_check_authn: user name contains non-alphanumeric characters");
                 return DECLINED;
             }
 
-            totp_config = totp_get_user_config(r, user);
+            totp_config = totp_get_user_config(r, sent_user);
             if (!totp_config) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "authenticate_form_authn: could not find TOTP configuration for user \"%s\"", user);
+                              "authn_totp_check_authn: could not find TOTP configuration for user \"%s\"", sent_user);
                 return DECLINED;
             }
 #ifdef DEBUG_TOTP_AUTH
@@ -1153,13 +1154,13 @@ static int authenticate_form_authn(request_rec * r)
                 totp_generate_code(totp_timestamp, totp_config->shared_key,
                                    totp_config->shared_key_len, &hash);
 
-            if(0 == memcmp(hash, hash_sent, APR_SHA1_DIGESTSIZE)) {
+            if(0 == memcmp(hash, sent_hash, APR_SHA1_DIGESTSIZE)) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "authenticate_form_authn: access granted to user \"%s\"", user);
+                              "authn_totp_check_authn: access granted to user \"%s\"", sent_user);
                 return OK;
             } else {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "authenticate_form_authn: hash mismatch for user \"%s\"", user);
+                              "authn_totp_check_authn: hash mismatch for user \"%s\"", sent_user);
             }
         }
     }
