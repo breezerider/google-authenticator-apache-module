@@ -29,6 +29,7 @@
 
 #include "httpd.h"
 #include "http_log.h"
+#include "http_core.h"          /* for ap_auth_name */
 #include "http_request.h"
 
 #include "mod_auth.h"
@@ -398,7 +399,7 @@ totp_get_user_config(request_rec *r, const char *user)
  **/
 static unsigned int
 totp_generate_code(apr_time_t timestamp, const char *secret,
-                   apr_size_t secret_len, char **hash_out)
+                   apr_size_t secret_len, unsigned char **hash_out)
 {
     unsigned char   hash[APR_SHA1_DIGESTSIZE];
     const size_t    challenge_size = sizeof(apr_time_t);
@@ -598,15 +599,17 @@ totp_get_authn_token(request_rec *r, apr_time_t timestamp,
 {
     const char*     challenge;
     const char*     token;
+    const char*     tmp;
  
     token = apr_pencode_base64_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_NONE, NULL);
     challenge = apr_pencode_base64_binary(r->pool, (unsigned char *)&timestamp, sizeof(apr_time_t), APR_ENCODE_NONE, NULL);
 
     token = apr_pstrcat(r->pool, challenge, ".", token, NULL);
 
+    tmp = apr_pencode_base16_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_COLON, NULL);
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "totp_get_authn_token: time %" APR_TIME_T_FMT ", hash \"%s\", token \"%s\"",
-                  timestamp, hash, token);
+                  "totp_get_authn_token: time %" APR_TIME_T_FMT ", hash \"%s\" -> token \"%s\"",
+                  timestamp, tmp, token);
 
     return token;
 }
@@ -615,25 +618,33 @@ static bool
 totp_parse_authn_token(request_rec *r, const char * token,
                        apr_time_t *timestamp, unsigned char **hash)
 {
-    const char     *psep = ".";
+    char           *input = apr_pmemdup(r->pool, token, strlen(token) + 1);
     char           *value, *last;
+    const char     *psep = ".";
+    const char     *tmp;
+    apr_size_t      len = 0;
+    apr_status_t    status;
+
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                   "totp_parse_authn_token: parsing token \"%s\"",
                   token);
 
-    value = apr_strtok(token, psep, &last);
+    value = apr_strtok(input, psep, &last);
     if (value != NULL) {
-        value = apr_pdecode_base64_binary(r->pool, value, APR_ENCODE_STRING, APR_ENCODE_NONE, NULL);
-        if (!value||!is_digit_str(value)) {
-            ap_log_rerror(APLOG_MARK,
-                          APLOG_ERR,
-                          0, r,
-                          "totp_parse_authn_token: timestamp \"%s\" contains non-digit characters",
-                          value ? value : "<null>");
-            return false;
-        } else if (timestamp)
-            *timestamp = apr_atoi64(value);
+        if (timestamp) {
+            status = apr_decode_base64_binary(NULL, value, APR_ENCODE_STRING, APR_ENCODE_NONE, &len);
+            if(len == sizeof(apr_time_t))
+                status = apr_decode_base64_binary((unsigned char *)timestamp, value, APR_ENCODE_STRING, APR_ENCODE_NONE, &len);
+
+            if((status != APR_SUCCESS)||(len != sizeof(apr_time_t))) {
+                  ap_log_rerror(APLOG_MARK,
+                                APLOG_ERR,
+                                status, r,
+                                "totp_parse_authn_token: failed to decode the timestamp");
+                  return false;
+            }
+        }
         
         value = apr_strtok(NULL, psep, &last);
         if(!value) {
@@ -642,18 +653,30 @@ totp_parse_authn_token(request_rec *r, const char * token,
                           0, r,
                           "totp_parse_authn_token: hash string is absent");
             return false;
-        } else if (hash)
-            *hash = apr_pdecode_base64_binary(r->pool, value, APR_ENCODE_STRING, APR_ENCODE_NONE, NULL);
+        } else if (hash) {
+            status = apr_decode_base64_binary(NULL, value, APR_ENCODE_STRING, APR_ENCODE_NONE, &len);
+            if(len == APR_SHA1_DIGESTSIZE)
+                status = apr_decode_base64_binary(*hash, value, APR_ENCODE_STRING, APR_ENCODE_NONE, &len);
+
+            if((status != APR_SUCCESS)||(len != APR_SHA1_DIGESTSIZE)) {
+                  ap_log_rerror(APLOG_MARK,
+                                APLOG_ERR,
+                                status, r,
+                                "totp_parse_authn_token: failed to decode the hash");
+                  return false;
+            }
+        }
     } else {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                    "totp_parse_authn_token: token \"%s\" does not contain a dot",
+                    "totp_parse_authn_token: token \"%s\" could not be split",
                     token);
         return false;
     }
 
+    tmp = apr_pencode_base16_binary(r->pool, *hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_COLON, NULL);
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                   "totp_parse_authn_token: token \"%s\" -> time %" APR_TIME_T_FMT ", hash \"%s\"",
-                  token, timestamp ? *timestamp ? 0L, hash ? *hash : "<NULL>");
+                  token, timestamp ? *timestamp : 0L, hash ? tmp : "<NULL>");
 
     return true;
 }
@@ -891,7 +914,8 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
     unsigned int    password_len = strlen(password);
     apr_time_t      timestamp = apr_time_now();
     apr_time_t      totp_timestamp = to_totp_timestamp(timestamp);
-    unsigned char * hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
+    unsigned char  *hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
+    const char     *token;
     unsigned int    totp_code = 0;
     unsigned int    user_code;
     int             i;
@@ -965,12 +989,9 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
             if (totp_code == user_code) {
                 if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
-                    char *token = totp_get_authn_token(r, timestamp, hash);
-
-                    apr_time_t t;
-                    unsigned char *hash;
-
-                    totp_parse_authn_token(r, token, &t, &hash);
+                    token = totp_get_authn_token(r, timestamp, hash);
+                    if(token)
+                        set_notes_auth(r, user, token);
 #ifdef DEBUG_TOTP_AUTH
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                                   "access granted for user \"%s\" based on code \"%6.6u\"",
@@ -1086,6 +1107,67 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
     return AUTH_USER_FOUND;
 }
 
+/**
+ * Check user's TOTP authentication token
+ */
+static int authenticate_form_authn(request_rec * r)
+{
+    totp_auth_config_rec *conf =
+        ap_get_module_config(r->per_dir_config, &authn_totp_module);
+
+    totp_user_config *totp_config = NULL;
+
+    const char *sent_user = NULL, *sent_token = NULL;
+
+    unsigned char *hash, sent_hash;
+    apr_time_t     timestamp, totp_timestamp;
+    apr_status_t   status;
+
+    get_notes_auth(r, &sent_user, &sent_token);
+    if(sent_user && sent_token) {
+        hash_sent = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
+        if(totp_parse_authn_token(r, token, &timestamp, &hash_sent)) {
+            
+            totp_timestamp = to_totp_timestamp(timestamp);
+            
+            /* validate user name */
+            if(!is_alnum_str(user)) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                              "authenticate_form_authn: user name contains non-alphanumeric characters");
+                return DECLINED;
+            }
+
+            totp_config = totp_get_user_config(r, user);
+            if (!totp_config) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                              "authenticate_form_authn: could not find TOTP configuration for user \"%s\"", user);
+                return DECLINED;
+            }
+#ifdef DEBUG_TOTP_AUTH
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                          "secret key is \"%s\", secret length: %ld",
+                          totp_config->shared_key, totp_config->shared_key_len);
+#endif
+            hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
+            totp_code =
+                totp_generate_code(totp_timestamp, totp_config->shared_key,
+                                   totp_config->shared_key_len, &hash);
+
+            if(0 == memcmp(hash, hash_sent, APR_SHA1_DIGESTSIZE)) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                              "authenticate_form_authn: access granted to user \"%s\"", user);
+                return OK;
+            } else {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                              "authenticate_form_authn: hash mismatch for user \"%s\"", user);
+            }
+        }
+    }
+
+    /* pass on */
+    return DECLINED;
+}
+
 /* Module Declaration */
 
 static const authn_provider authn_totp_provider =
@@ -1094,6 +1176,8 @@ static const authn_provider authn_totp_provider =
 static void
 register_hooks(apr_pool_t *p)
 {
+    ap_hook_check_authn(authn_totp_check_authn, NULL, NULL, APR_HOOK_FIRST,
+                        AP_AUTH_INTERNAL_PER_CONF);
     ap_register_auth_provider(p, AUTHN_PROVIDER_GROUP, "totp",
                               AUTHN_PROVIDER_VERSION, &authn_totp_provider,
                               AP_AUTH_INTERNAL_PER_CONF);
