@@ -1119,7 +1119,7 @@ static int authn_totp_check_authn(request_rec * r)
 
     const char *sent_user = NULL, *sent_token = NULL;
 
-    unsigned char *hash, sent_hash;
+    unsigned char *hash, *sent_hash;
     unsigned int   totp_code;
     apr_time_t     timestamp, totp_timestamp;
     apr_status_t   status;
@@ -1127,7 +1127,7 @@ static int authn_totp_check_authn(request_rec * r)
     get_notes_auth(r, &sent_user, &sent_token);
     if(sent_user && sent_token) {
         sent_hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
-        if(totp_parse_authn_token(r, token, &timestamp, &sent_hash)) {
+        if(totp_parse_authn_token(r, sent_token, &timestamp, &sent_hash)) {
             
             totp_timestamp = to_totp_timestamp(timestamp);
             
