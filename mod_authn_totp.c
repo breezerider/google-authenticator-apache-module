@@ -411,7 +411,7 @@ totp_generate_code(apr_time_t timestamp, const char *secret, apr_size_t secret_l
     hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash,
               APR_SHA1_DIGESTSIZE);
     if (hash_out)
-        memcpy(hash, *hash_out, APR_SHA1_DIGESTSIZE)
+        memcpy(hash, *hash_out, APR_SHA1_DIGESTSIZE);
     offset = hash[APR_SHA1_DIGESTSIZE - 1] & 0xF;
     for (j = 0; j < 4; ++j) {
         totp_code <<= 8;
@@ -604,10 +604,58 @@ totp_get_authn_token(request_rec *r, apr_time_t timestamp,
     token = apr_pstrcat(r->pool, challenge, ".", token, NULL);
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "totp_get_authn_token: time %" APR_TIME_T_FMT ", token \"%s\"",
-                  timestamp, token);
+                  "totp_get_authn_token: time %" APR_TIME_T_FMT ", hash \"%s\", token \"%s\"",
+                  timestamp, hash, token);
 
     return token;
+}
+
+static bool
+totp_parse_authn_token(request_rec *r, const char * token,
+                       apr_time_t *timestamp, unsigned char **hash)
+{
+    const char     *psep = ".";
+    char           *token, *last;
+    const char*     value;
+
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "totp_parse_authn_token: parsing token \"%s\"",
+                  token);
+
+    value = apr_strtok(token, psep, &last);
+    if (value != NULL) {
+        value = apr_pdecode_base64_binary(r->pool, token, APR_ENCODE_STRING, APR_ENCODE_NONE, NULL);
+        if (!value||!is_digit_str(value)) {
+            ap_log_rerror(APLOG_MARK,
+                          APLOG_ERR,
+                          0, r,
+                          "totp_parse_authn_token: timestamp \"%s\" contains non-digit characters",
+                          value ? value : "<null>");
+            return false;
+        } else if (timestamp)
+            *timestamp = apr_atoi64(value);
+        
+        value = apr_strtok(NULL, psep, &last);
+        if(!value) {
+            ap_log_rerror(APLOG_MARK,
+                          APLOG_ERR,
+                          0, r,
+                          "totp_parse_authn_token: hash string is absent");
+            return false;
+        } else if (hash)
+            *hash = apr_pdecode_base64_binary(r->pool, token, APR_ENCODE_STRING, APR_ENCODE_NONE, NULL);
+    } else {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                    "totp_parse_authn_token: token \"%s\" does not contain a dot",
+                    token);
+        return false;
+    }
+
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "totp_parse_authn_token: token \"%s\" -> time %" APR_TIME_T_FMT ", hash \"%s\"",
+                  token, timestamp ? *timestamp ? 0L, hash ? *hash : "<NULL>");
+
+    return true;
 }
 
 /**
@@ -917,7 +965,12 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
             if (totp_code == user_code) {
                 if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
-                    totp_get_authn_token(r, timestamp, hash);
+                    char *token = totp_get_authn_token(r, timestamp, hash);
+
+                    apr_time_t t;
+                    unsigned char *hash;
+
+                    totp_parse_authn_token(r, token, &t, &hash);
 #ifdef DEBUG_TOTP_AUTH
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                                   "access granted for user \"%s\" based on code \"%6.6u\"",
