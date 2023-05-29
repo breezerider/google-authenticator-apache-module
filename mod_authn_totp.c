@@ -397,7 +397,8 @@ totp_get_user_config(request_rec *r, const char *user)
   * \return TOTP code
  **/
 static unsigned int
-totp_generate_code(apr_time_t timestamp, const char *secret, apr_size_t secret_len, char **hash_out)
+totp_generate_code(apr_time_t timestamp, const char *secret,
+                   apr_size_t secret_len, char **hash_out)
 {
     unsigned char   hash[APR_SHA1_DIGESTSIZE];
     const size_t    challenge_size = sizeof(apr_time_t);
@@ -411,7 +412,7 @@ totp_generate_code(apr_time_t timestamp, const char *secret, apr_size_t secret_l
     hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash,
               APR_SHA1_DIGESTSIZE);
     if (hash_out)
-        memcpy(hash, *hash_out, APR_SHA1_DIGESTSIZE);
+        memcpy(*hash_out, hash, APR_SHA1_DIGESTSIZE);
     offset = hash[APR_SHA1_DIGESTSIZE - 1] & 0xF;
     for (j = 0; j < 4; ++j) {
         totp_code <<= 8;
@@ -599,7 +600,7 @@ totp_get_authn_token(request_rec *r, apr_time_t timestamp,
     const char*     token;
  
     token = apr_pencode_base64_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_NONE, NULL);
-    challenge = apr_pencode_base64_binary(r->pool, &timestamp, sizeof(apr_time_t), APR_ENCODE_NONE, NULL);
+    challenge = apr_pencode_base64_binary(r->pool, (unsigned char *)&timestamp, sizeof(apr_time_t), APR_ENCODE_NONE, NULL);
 
     token = apr_pstrcat(r->pool, challenge, ".", token, NULL);
 
@@ -937,12 +938,12 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #endif
 
     /* check if user login count is within the rate limit */
-    if (!check_rate_limit(r, timestamp, user, totp_config)) {
+/*    if (!check_rate_limit(r, timestamp, user, totp_config)) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "login attemp for user \"%s\" exceeds rate limit", user);
         return AUTH_DENIED;
     }
-
+*/
                                 /***
 	 *** Perform TOTP Authentication
 	 ***/
@@ -1068,7 +1069,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 
     totp_code =
         totp_generate_code(totp_timestamp, totp_config->shared_key,
-                           totp_config->shared_key_len);
+                           totp_config->shared_key_len, NULL);
 
     pwstr = apr_psprintf(r->pool, "%6.6u", totp_code);
     hashstr = apr_psprintf(r->pool, "%s:%s:%s", user, realm, pwstr);
