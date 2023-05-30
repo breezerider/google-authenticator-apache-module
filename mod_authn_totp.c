@@ -27,12 +27,12 @@
  * Oleksandr Ostrenko
  */
 
+#include <stdbool.h>            /* for bool */
+
 #include "httpd.h"
 #include "http_log.h"
 #include "http_core.h"          /* for ap_auth_name */
 #include "http_request.h"
-
-#include "mod_auth.h"
 
 #include "apr_general.h"
 #include "apr_time.h"           /* for apr_time_t */
@@ -45,7 +45,12 @@
 #include "apr_md5.h"            /* for APR_MD5_DIGESTSIZE */
 #include "apr_sha1.h"           /* for APR_SHA1_DIGESTSIZE */
 
-#include <stdbool.h>            /* for bool */
+#include "mod_auth.h"
+#include "mod_session.h"
+
+static APR_OPTIONAL_FN_TYPE(ap_session_load) *ap_session_load_fn = NULL;
+static APR_OPTIONAL_FN_TYPE(ap_session_get)  *ap_session_get_fn = NULL;
+static APR_OPTIONAL_FN_TYPE(ap_session_set)  *ap_session_set_fn = NULL;
 
 #define DEBUG_TOTP_AUTH
 
@@ -750,6 +755,60 @@ static void get_notes_auth(request_rec *r,
 
 }
 
+
+/**
+ * Set the auth username and password into the session.
+ *
+ * If either the username, or the password are NULL, the username
+ * and/or password will be removed from the session.
+ */
+static apr_status_t set_session_auth(request_rec * r,
+                                     const char *user, const char *token)
+{
+
+    const char *authname = ap_auth_name(r);
+    session_rec *z = NULL;
+
+    ap_session_load_fn(r, &z);
+    ap_session_set_fn(r, z, apr_pstrcat(r->pool, authname, "-" MOD_SESSION_USER, NULL), user);
+    ap_session_set_fn(r, z, apr_pstrcat(r->pool, authname, "-totp-token", NULL), token);
+
+    return APR_SUCCESS;
+
+}
+
+/**
+ * Get the auth username and password from the main request
+ * notes table, if present.
+ */
+static apr_status_t get_session_auth(request_rec * r,
+                                     const char **user, const char **token)
+{
+    const char *authname = ap_auth_name(r);
+    session_rec *z = NULL;
+
+    ap_session_load_fn(r, &z);
+
+    if (user) {
+        ap_session_get_fn(r, z, apr_pstrcat(r->pool, authname, "-" MOD_SESSION_USER, NULL), user);
+    }
+    if (token) {
+        ap_session_get_fn(r, z, apr_pstrcat(r->pool, authname, "-totp-token", NULL), token);
+    }
+
+    /* set the user, even though the user is unauthenticated at this point */
+    if (user && *user) {
+        r->user = (char *) *user;
+    }
+
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "from session: " MOD_SESSION_USER ": %s, token: %s",
+                  user ? *user : "<null>", token ? *token : "<null>");
+
+    return APR_SUCCESS;
+
+}
+
 /* Authentication Helpers: Disallow TOTP Code Reuse */
 
 typedef struct {
@@ -990,8 +1049,12 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
             if (totp_code == user_code) {
                 if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
                     token = totp_get_authn_token(r, timestamp, hash);
-                    if(token)
+                    if(token) {
                         set_notes_auth(r, user, token);
+                        if (ap_session_load_fn && ap_session_get_fn && ap_session_set_fn) {
+                            set_session_auth(r, user, token);
+                        }
+                    }
 #ifdef DEBUG_TOTP_AUTH
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                                   "access granted for user \"%s\" based on code \"%6.6u\"",
@@ -1125,6 +1188,12 @@ static int authn_totp_check_authn(request_rec * r)
     apr_status_t   status;
 
     get_notes_auth(r, &sent_user, &sent_token);
+    if((!sent_user || !sent_token) && 
+       ap_session_load_fn && 
+       ap_session_get_fn && 
+       ap_session_set_fn)
+        get_session_auth(r, &sent_user, &sent_token);
+
     if(sent_user && sent_token) {
         sent_hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
         if(totp_parse_authn_token(r, sent_token, &timestamp, &sent_hash)) {
@@ -1169,6 +1238,26 @@ static int authn_totp_check_authn(request_rec * r)
     return DECLINED;
 }
 
+static int authn_totp_post_config(apr_pool_t *pconf, apr_pool_t *plog,
+                                  apr_pool_t *ptemp, server_rec *s)
+{
+
+    if (!ap_session_load_fn || !ap_session_get_fn || !ap_session_set_fn) {
+        ap_session_load_fn = APR_RETRIEVE_OPTIONAL_FN(ap_session_load);
+        ap_session_get_fn  = APR_RETRIEVE_OPTIONAL_FN(ap_session_get);
+        ap_session_set_fn  = APR_RETRIEVE_OPTIONAL_FN(ap_session_set);
+
+        if (!ap_session_load_fn || !ap_session_get_fn || !ap_session_set_fn) {
+            ap_log_error(APLOG_MARK, APLOG_WARNING, 
+                         0, NULL,
+                         "Failed to load mod_session: TOTP authentication will not be persistent");
+            return !OK;
+        }
+    }
+
+    return OK;
+}
+
 /* Module Declaration */
 
 static const authn_provider authn_totp_provider =
@@ -1179,6 +1268,9 @@ register_hooks(apr_pool_t *p)
 {
     ap_hook_check_authn(authn_totp_check_authn, NULL, NULL, APR_HOOK_FIRST,
                         AP_AUTH_INTERNAL_PER_CONF);
+
+    ap_hook_post_config(authn_totp_post_config,NULL,NULL,APR_HOOK_MIDDLE);
+
     ap_register_auth_provider(p, AUTHN_PROVIDER_GROUP, "totp",
                               AUTHN_PROVIDER_VERSION, &authn_totp_provider,
                               AP_AUTH_INTERNAL_PER_CONF);
