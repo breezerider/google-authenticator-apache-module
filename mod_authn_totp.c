@@ -70,8 +70,8 @@ static APR_OPTIONAL_FN_TYPE(ap_session_set)  *ap_session_set_fn = NULL;
     _a < _b ? _a : _b;       \
 })
 
-static bool
-is_digit_str(const char *val)
+    static bool
+                    is_digit_str(const char *val)
 {
     const char     *tmp = val;
     for (; *tmp; ++tmp)
@@ -99,7 +99,7 @@ static          apr_time_t
 to_totp_timestamp(apr_time_t ts)
 {
     /* count number of 30-second intervals */
-    return apr_time_sec(ts) / 30; 
+    return apr_time_sec(ts) / 30;
 }
 
 /**
@@ -228,25 +228,25 @@ typedef struct {
 } totp_file_helper_cb_data;
 
 /**
- * \brief totp_file_helper_cb Callback function used by totp_check_n_update_file_helper
+ * \brief totp_file_helper_cb Callback function used by check_n_update_file_helper
  * \param new Pointer to new data entry
  * \param old Pointer to an existing data entry
  * \param data Pointert to callback function data
- * \return if old if not NULL then retunr true if existing entry should be kept, false otherwise. 
+ * \return if old if not NULL then retunr true if existing entry should be kept, false otherwise.
  * When old is NULL, return if true if new entry should be appended to the file, false otherwise.
 **/
 typedef bool    (*totp_file_helper_cb)(const void *new, const void *old,
                                        totp_file_helper_cb_data * data);
 
 /**
-  * \brief read_user_totp_config Read a user's TOTP configuration from configuration file
+  * \brief read_user_config Read a user's TOTP configuration from configuration file
   * \param user User name
   * \param token_dir Directory contianing TOTP configuration
   * \param pool The pool which we are logging for
   * \return Pointer to structure containing TOTP configuration for given user on success, NULL otherwise
  **/
-totp_user_config *
-totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
+static totp_user_config *
+read_user_config(request_rec *r, const char *user, const char *token_dir)
 {
     const char     *psep = " ";
     char           *config_filename;
@@ -264,7 +264,7 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
 
     if (status != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-                      "totp_read_user_config: could not open user configuration file \"%s\"",
+                      "read_user_config: could not open user configuration file \"%s\"",
                       config_filename);
         return NULL;
     }
@@ -291,7 +291,7 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
                         ap_log_rerror(APLOG_MARK,
                                       APLOG_ERR,
                                       0, r,
-                                      "totp_read_user_config: window size value \"%s\" contains invalid characters at line %d",
+                                      "read_user_config: window size value \"%s\" contains invalid characters at line %d",
                                       token, line_no);
                     else
                         user_config->window_size =
@@ -303,7 +303,7 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
                         ap_log_rerror(APLOG_MARK,
                                       APLOG_ERR,
                                       0, r,
-                                      "totp_read_user_config: rate limit count value \"%s\" contains invalid characters at line %d",
+                                      "read_user_config: rate limit count value \"%s\" contains invalid characters at line %d",
                                       token, line_no);
                     else
                         user_config->rate_limit_count =
@@ -316,7 +316,7 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
                         ap_log_rerror(APLOG_MARK,
                                       APLOG_ERR,
                                       0, r,
-                                      "totp_read_user_config: rate limit seconds value \"%s\" contains invalid characters at line %d",
+                                      "read_user_config: rate limit seconds value \"%s\" contains invalid characters at line %d",
                                       token, line_no);
                     } else
                         user_config->rate_limit_seconds =
@@ -324,13 +324,13 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
                 } else
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG,
                                   0, r,
-                                  "totp_read_user_config: unrecognized directive \"%s\" at line %d",
+                                  "read_user_config: unrecognized directive \"%s\" at line %d",
                                   line, line_no);
 
             } else
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG,
                               0, r,
-                              "totp_read_user_config: skipping comment line \"%s\" at line %d",
+                              "read_user_config: skipping comment line \"%s\" at line %d",
                               line, line_no);
         }
         /* Shared key is on the first valid line */
@@ -344,7 +344,7 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
 
             if (!user_config->shared_key) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "totp_read_user_config: could not find a valid BASE32 encoded secret at line %d",
+                              "read_user_config: could not find a valid BASE32 encoded secret at line %d",
                               line_no);
                 return NULL;
             }
@@ -357,14 +357,14 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
             /* validate scratch code */
             if (!is_digit_str(token))
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "totp_read_user_config: scratch code \"%s\" contains invalid characters and was skipped at line %d",
+                              "read_user_config: scratch code \"%s\" contains invalid characters and was skipped at line %d",
                               line, line_no);
             else if (user_config->scratch_codes_count < 10)
                 user_config->scratch_codes[user_config->scratch_codes_count++]
                     = apr_atoi64(token);
             else
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "totp_read_user_config: scratch code \"%s\" at line %d was skipped, only 10 scratch codes per user are supported",
+                              "read_user_config: scratch code \"%s\" at line %d was skipped, only 10 scratch codes per user are supported",
                               line, line_no);
         }
     }
@@ -375,35 +375,36 @@ totp_read_user_config(request_rec *r, const char *user, const char *token_dir)
 }
 
 /**
-  * \brief totp_get_user_config Based on the given username, get the users TOTP configuration
+  * \brief get_user_config Based on the given username, get the users TOTP configuration
   * \param r Request
   * \param user User name
   * \return Pointer to structure containing TOTP configuration for given user on success, NULL otherwise
  **/
 static totp_user_config *
-totp_get_user_config(request_rec *r, const char *user)
+get_user_config(request_rec *r, const char *user)
 {
     totp_auth_config_rec *conf =
         ap_get_module_config(r->per_dir_config, &authn_totp_module);
 
     if (!conf->tokenDir) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "totp_get_user_config: TOTPAuthTokenDir is not defined");
+                      "get_user_config: TOTPAuthTokenDir is not defined");
         return NULL;
     }
 
-    return totp_read_user_config(r, user, conf->tokenDir);
+    return read_user_config(r, user, conf->tokenDir);
 }
 
 /**
-  * \brief totp_generate_code Generate a one time password using shared secret and timestamp
+  * \brief generate_totp_code Generate a one time password using shared secret and timestamp
   * \param timestamp Unix timestamp
-  * \param secret Shared secret key.
-  * \param secret_len Length of the secret key.
-  * \return TOTP code
+  * \param secret Shared secret key
+  * \param secret_len Length of the secret key
+  * \param hash_out Either NULL or a pointer to memory to store the SHA1 hash digest
+  * \return TOTP code as an unsigned integer
  **/
 static unsigned int
-totp_generate_code(apr_time_t timestamp, const char *secret,
+generate_totp_code(apr_time_t timestamp, const char *secret,
                    apr_size_t secret_len, unsigned char **hash_out)
 {
     unsigned char   hash[APR_SHA1_DIGESTSIZE];
@@ -432,21 +433,21 @@ totp_generate_code(apr_time_t timestamp, const char *secret,
 }
 
 /**
-  * \brief totp_check_n_update_file_helper Update file entries and apend new entry
+  * \brief check_n_update_file_helper Update file entries and apend new entry
   * \param r Request
   * \param filepath Path to target file
   * \param entry Pointer to new data entry
   * \param entry_size Size of the entry data structure in bytes
   * \param cb_check Pointer to callback function that is called on each entry
   * \param cb_data Pointert to callback function data
-  * \param pool APR pool 
+  * \param pool APR pool
   * \return Pointer to structure containing TOTP configuration for given user on success, NULL otherwise
  **/
-apr_status_t
-totp_check_n_update_file_helper(request_rec *r, const char *filepath,
-                                const void *entry, apr_size_t entry_size,
-                                totp_file_helper_cb cb_check,
-                                totp_file_helper_cb_data *cb_data)
+static          apr_status_t
+check_n_update_file_helper(request_rec *r, const char *filepath,
+                           const void *entry, apr_size_t entry_size,
+                           totp_file_helper_cb cb_check,
+                           totp_file_helper_cb_data *cb_data)
 {
     apr_status_t    status;
     const char     *tmp_filepath;
@@ -598,30 +599,50 @@ totp_check_n_update_file_helper(request_rec *r, const char *filepath,
 
 /* Authentication Helpers: Notes Auth */
 
+/**
+  * \brief generate_authn_token Generate an authentication token
+  * \param r Request
+  * \param timestamp Unix timestamp
+  * \param hash Pointer to the corresponding SHA1 hash digest
+  * \return Pointer to string containing the authentication token on success, NULL otherwise
+ **/
 static const char *
-totp_get_authn_token(request_rec *r, apr_time_t timestamp,
-                     const unsigned char *hash)
+generate_authn_token(request_rec *r, apr_time_t timestamp, const unsigned char *hash)
 {
-    const char*     challenge;
-    const char*     token;
-    const char*     tmp;
- 
-    token = apr_pencode_base64_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_NONE, NULL);
-    challenge = apr_pencode_base64_binary(r->pool, (unsigned char *)&timestamp, sizeof(apr_time_t), APR_ENCODE_NONE, NULL);
+    const char     *challenge;
+    const char     *token;
+    const char     *tmp;
+
+    token =
+        apr_pencode_base64_binary(r->pool, hash, APR_SHA1_DIGESTSIZE,
+                                  APR_ENCODE_NONE, NULL);
+    challenge =
+        apr_pencode_base64_binary(r->pool, (unsigned char *) &timestamp,
+                                  sizeof(apr_time_t), APR_ENCODE_NONE, NULL);
 
     token = apr_pstrcat(r->pool, challenge, ".", token, NULL);
 
-    tmp = apr_pencode_base16_binary(r->pool, hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_COLON, NULL);
+    tmp =
+        apr_pencode_base16_binary(r->pool, hash, APR_SHA1_DIGESTSIZE,
+                                  APR_ENCODE_COLON, NULL);
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "totp_get_authn_token: time %" APR_TIME_T_FMT ", hash \"%s\" -> token \"%s\"",
-                  timestamp, tmp, token);
+                  "generate_authn_token: time %" APR_TIME_T_FMT
+                  ", hash \"%s\" -> token \"%s\"", timestamp, tmp, token);
 
     return token;
 }
 
+/**
+  * \brief parse_authn_token Parse an authentication token
+  * \param r Request
+  * \param token Pointer to string containing the authentication token
+  * \param timestamp Either NULL or pointer to memory location to store the Unix timestamp
+  * \param hash Either NULL or pointer to memory that can hold the corresponding SHA1 hash digest
+  * \return true on success, false otherwise
+ **/
 static bool
-totp_parse_authn_token(request_rec *r, const char * token,
-                       apr_time_t *timestamp, unsigned char **hash)
+parse_authn_token(request_rec *r, const char *token,
+                  apr_time_t *timestamp, unsigned char **hash)
 {
     char           *input = apr_pmemdup(r->pool, token, strlen(token) + 1);
     char           *value, *last;
@@ -632,56 +653,65 @@ totp_parse_authn_token(request_rec *r, const char * token,
 
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "totp_parse_authn_token: parsing token \"%s\"",
-                  token);
+                  "parse_authn_token: parsing token \"%s\"", token);
 
     value = apr_strtok(input, psep, &last);
     if (value != NULL) {
         if (timestamp) {
-            status = apr_decode_base64_binary(NULL, value, APR_ENCODE_STRING, APR_ENCODE_NONE, &len);
-            if(len == sizeof(apr_time_t))
-                status = apr_decode_base64_binary((unsigned char *)timestamp, value, APR_ENCODE_STRING, APR_ENCODE_NONE, &len);
+            status =
+                apr_decode_base64_binary(NULL, value, APR_ENCODE_STRING,
+                                         APR_ENCODE_NONE, &len);
+            if (len == sizeof(apr_time_t))
+                status =
+                    apr_decode_base64_binary((unsigned char *) timestamp, value,
+                                             APR_ENCODE_STRING, APR_ENCODE_NONE,
+                                             &len);
 
-            if((status != APR_SUCCESS)||(len != sizeof(apr_time_t))) {
-                  ap_log_rerror(APLOG_MARK,
-                                APLOG_ERR,
-                                status, r,
-                                "totp_parse_authn_token: failed to decode the timestamp");
-                  return false;
+            if ((status != APR_SUCCESS) || (len != sizeof(apr_time_t))) {
+                ap_log_rerror(APLOG_MARK,
+                              APLOG_ERR,
+                              status, r,
+                              "parse_authn_token: failed to decode the timestamp");
+                return false;
             }
         }
-        
+
         value = apr_strtok(NULL, psep, &last);
-        if(!value) {
+        if (!value) {
             ap_log_rerror(APLOG_MARK,
                           APLOG_ERR,
-                          0, r,
-                          "totp_parse_authn_token: hash string is absent");
+                          0, r, "parse_authn_token: hash string is absent");
             return false;
         } else if (hash) {
-            status = apr_decode_base64_binary(NULL, value, APR_ENCODE_STRING, APR_ENCODE_NONE, &len);
-            if(len == APR_SHA1_DIGESTSIZE)
-                status = apr_decode_base64_binary(*hash, value, APR_ENCODE_STRING, APR_ENCODE_NONE, &len);
+            status =
+                apr_decode_base64_binary(NULL, value, APR_ENCODE_STRING,
+                                         APR_ENCODE_NONE, &len);
+            if (len == APR_SHA1_DIGESTSIZE)
+                status =
+                    apr_decode_base64_binary(*hash, value, APR_ENCODE_STRING,
+                                             APR_ENCODE_NONE, &len);
 
-            if((status != APR_SUCCESS)||(len != APR_SHA1_DIGESTSIZE)) {
-                  ap_log_rerror(APLOG_MARK,
-                                APLOG_ERR,
-                                status, r,
-                                "totp_parse_authn_token: failed to decode the hash");
-                  return false;
+            if ((status != APR_SUCCESS) || (len != APR_SHA1_DIGESTSIZE)) {
+                ap_log_rerror(APLOG_MARK,
+                              APLOG_ERR,
+                              status, r,
+                              "parse_authn_token: failed to decode the hash");
+                return false;
             }
         }
     } else {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                    "totp_parse_authn_token: token \"%s\" could not be split",
-                    token);
+                      "parse_authn_token: token \"%s\" could not be split", token);
         return false;
     }
 
-    tmp = apr_pencode_base16_binary(r->pool, *hash, APR_SHA1_DIGESTSIZE, APR_ENCODE_COLON, NULL);
+    tmp =
+        apr_pencode_base16_binary(r->pool, *hash, APR_SHA1_DIGESTSIZE,
+                                  APR_ENCODE_COLON, NULL);
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "totp_parse_authn_token: token \"%s\" -> time %" APR_TIME_T_FMT ", hash \"%s\"",
-                  token, timestamp ? *timestamp : 0L, hash ? tmp : "<NULL>");
+                  "parse_authn_token: token \"%s\" -> time %" APR_TIME_T_FMT
+                  ", hash \"%s\"", token, timestamp ? *timestamp : 0L,
+                  hash ? tmp : "<NULL>");
 
     return true;
 }
@@ -690,11 +720,11 @@ totp_parse_authn_token(request_rec *r, const char * token,
  * Set the auth username and password into the main request
  * notes table.
  */
-static void set_notes_auth(request_rec * r,
-                           const char *user, const char *token)
+static void
+set_notes_auth(request_rec *r, const char *user, const char *token)
 {
-    apr_table_t *notes = NULL;
-    const char *authname;
+    apr_table_t    *notes = NULL;
+    const char     *authname;
 
     /* find the main request */
     while (r->main) {
@@ -711,7 +741,8 @@ static void set_notes_auth(request_rec * r,
         apr_table_setn(notes, apr_pstrcat(r->pool, authname, "-user", NULL), user);
     }
     if (token) {
-        apr_table_setn(notes, apr_pstrcat(r->pool, authname, "-totp-token", NULL), token);
+        apr_table_setn(notes, apr_pstrcat(r->pool, authname, "-totp-token", NULL),
+                       token);
     }
 
 }
@@ -720,11 +751,11 @@ static void set_notes_auth(request_rec * r,
  * Get the auth username and password from the main request
  * notes table, if present.
  */
-static void get_notes_auth(request_rec *r,
-                           const char **user, const char **token)
+static void
+get_notes_auth(request_rec *r, const char **user, const char **token)
 {
-    const char *authname;
-    request_rec *m = r;
+    const char     *authname;
+    request_rec    *m = r;
 
     /* find the main request */
     while (m->main) {
@@ -738,10 +769,15 @@ static void get_notes_auth(request_rec *r,
     /* have we isolated the user and pw before? */
     authname = ap_auth_name(m);
     if (user) {
-        *user = (char *) apr_table_get(m->notes, apr_pstrcat(m->pool, authname, "-user", NULL));
+        *user =
+            (char *) apr_table_get(m->notes,
+                                   apr_pstrcat(m->pool, authname, "-user", NULL));
     }
     if (token) {
-        *token = (char *) apr_table_get(m->notes, apr_pstrcat(m->pool, authname, "-totp-token", NULL));
+        *token =
+            (char *) apr_table_get(m->notes,
+                                   apr_pstrcat(m->pool, authname, "-totp-token",
+                                               NULL));
     }
 
     /* set the user, even though the user is unauthenticated at this point */
@@ -755,6 +791,14 @@ static void get_notes_auth(request_rec *r,
 
 }
 
+/* Session cookie support */
+
+static bool
+is_session_cookie_available()
+{
+    return ap_session_load_fn && ap_session_get_fn && ap_session_set_fn;
+}
+
 
 /**
  * Set the auth username and password into the session.
@@ -762,16 +806,19 @@ static void get_notes_auth(request_rec *r,
  * If either the username, or the password are NULL, the username
  * and/or password will be removed from the session.
  */
-static apr_status_t set_session_auth(request_rec * r,
-                                     const char *user, const char *token)
+static apr_status_t
+set_session_auth(request_rec *r, const char *user, const char *token)
 {
 
-    const char *authname = ap_auth_name(r);
-    session_rec *z = NULL;
+    const char     *authname = ap_auth_name(r);
+    session_rec    *z = NULL;
 
     ap_session_load_fn(r, &z);
-    ap_session_set_fn(r, z, apr_pstrcat(r->pool, authname, "-" MOD_SESSION_USER, NULL), user);
-    ap_session_set_fn(r, z, apr_pstrcat(r->pool, authname, "-totp-token", NULL), token);
+    ap_session_set_fn(r, z,
+                      apr_pstrcat(r->pool, authname, "-" MOD_SESSION_USER, NULL),
+                      user);
+    ap_session_set_fn(r, z, apr_pstrcat(r->pool, authname, "-totp-token", NULL),
+                      token);
 
     return APR_SUCCESS;
 
@@ -781,19 +828,22 @@ static apr_status_t set_session_auth(request_rec * r,
  * Get the auth username and password from the main request
  * notes table, if present.
  */
-static apr_status_t get_session_auth(request_rec * r,
-                                     const char **user, const char **token)
+static apr_status_t
+get_session_auth(request_rec *r, const char **user, const char **token)
 {
-    const char *authname = ap_auth_name(r);
-    session_rec *z = NULL;
+    const char     *authname = ap_auth_name(r);
+    session_rec    *z = NULL;
 
     ap_session_load_fn(r, &z);
 
     if (user) {
-        ap_session_get_fn(r, z, apr_pstrcat(r->pool, authname, "-" MOD_SESSION_USER, NULL), user);
+        ap_session_get_fn(r, z,
+                          apr_pstrcat(r->pool, authname, "-" MOD_SESSION_USER, NULL),
+                          user);
     }
     if (token) {
-        ap_session_get_fn(r, z, apr_pstrcat(r->pool, authname, "-totp-token", NULL), token);
+        ap_session_get_fn(r, z, apr_pstrcat(r->pool, authname, "-totp-token", NULL),
+                          token);
     }
 
     /* set the user, even though the user is unauthenticated at this point */
@@ -877,9 +927,9 @@ mark_code_invalid(request_rec *r, apr_time_t timestamp,
     login_data.timestamp = timestamp;
     login_data.totp_code = totp_code;
 
-    status = totp_check_n_update_file_helper(r, code_filepath,
-                                             &login_data, sizeof(totp_login_rec),
-                                             cb_check_code, &cb_data);
+    status = check_n_update_file_helper(r, code_filepath,
+                                        &login_data, sizeof(totp_login_rec),
+                                        cb_check_code, &cb_data);
     if (APR_SUCCESS != status) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
                       "mark_code_invalid: could not update codes file \"%s\"",
@@ -949,9 +999,9 @@ check_rate_limit(request_rec *r, apr_time_t timestamp,
     cb_data.conf = totp_config;
     cb_data.res = 0;
 
-    status = totp_check_n_update_file_helper(r, login_filepath,
-                                             &timestamp, sizeof(apr_time_t),
-                                             cb_rate_limit, &cb_data);
+    status = check_n_update_file_helper(r, login_filepath,
+                                        &timestamp, sizeof(apr_time_t),
+                                        cb_rate_limit, &cb_data);
     if (APR_SUCCESS != status) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
                       "check_rate_limit: could not update logins file \"%s\"",
@@ -1005,7 +1055,7 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
         return AUTH_DENIED;
     }
 
-    totp_config = totp_get_user_config(r, user);
+    totp_config = get_user_config(r, user);
     if (!totp_config) {
 #ifdef DEBUG_TOTP_AUTH
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -1034,10 +1084,9 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
     if (password_len == 6) {
         for (i = -(totp_config->window_size); i <= (totp_config->window_size); ++i) {
             totp_code =
-                totp_generate_code(totp_timestamp + i,
+                generate_totp_code(totp_timestamp + i,
                                    totp_config->shared_key,
-                                   totp_config->shared_key_len,
-                                   &hash);
+                                   totp_config->shared_key_len, &hash);
 
 #ifdef DEBUG_TOTP_AUTH
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -1048,10 +1097,11 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
             if (totp_code == user_code) {
                 if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
-                    token = totp_get_authn_token(r, timestamp, hash);
-                    if(token) {
+                    token = generate_authn_token(r, timestamp, hash);
+                    if (token) {
                         set_notes_auth(r, user, token);
-                        if (ap_session_load_fn && ap_session_get_fn && ap_session_set_fn) {
+                        if (ap_session_load_fn && ap_session_get_fn
+                            && ap_session_set_fn) {
                             set_session_auth(r, user, token);
                         }
                     }
@@ -1136,7 +1186,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
         return AUTH_USER_NOT_FOUND;
     }
 
-    totp_config = totp_get_user_config(r, user);
+    totp_config = get_user_config(r, user);
     if (!totp_config) {
 #ifdef DEBUG_TOTP_AUTH
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -1151,7 +1201,7 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 #endif
 
     totp_code =
-        totp_generate_code(totp_timestamp, totp_config->shared_key,
+        generate_totp_code(totp_timestamp, totp_config->shared_key,
                            totp_config->shared_key_len, NULL);
 
     pwstr = apr_psprintf(r->pool, "%6.6u", totp_code);
@@ -1165,7 +1215,9 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 
     hash = apr_palloc(r->pool, APR_MD5_DIGESTSIZE);
     apr_md5(hash, hashstr, strlen(hashstr));
-    *rethash = apr_pencode_base16_binary(r->pool, hash, APR_MD5_DIGESTSIZE, APR_ENCODE_NONE, NULL);
+    *rethash =
+        apr_pencode_base16_binary(r->pool, hash, APR_MD5_DIGESTSIZE, APR_ENCODE_NONE,
+                                  NULL);
 
     return AUTH_USER_FOUND;
 }
@@ -1173,44 +1225,41 @@ authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
 /**
  * Check user's TOTP authentication token
  */
-static int authn_totp_check_authn(request_rec * r)
+static int
+authn_totp_check_authn(request_rec *r)
 {
     totp_auth_config_rec *conf =
         ap_get_module_config(r->per_dir_config, &authn_totp_module);
-
+ 
     totp_user_config *totp_config = NULL;
-
-    const char *sent_user = NULL, *sent_token = NULL;
-
-    unsigned char *hash, *sent_hash;
-    unsigned int   totp_code;
-    apr_time_t     timestamp, totp_timestamp;
-    apr_status_t   status;
+    const char     *sent_user = NULL, *sent_token = NULL;
+    unsigned char  *hash, *sent_hash;
+    unsigned int    totp_code;
+    apr_time_t      timestamp, totp_timestamp;
+    apr_status_t    status;
 
     get_notes_auth(r, &sent_user, &sent_token);
-    if((!sent_user || !sent_token) && 
-       ap_session_load_fn && 
-       ap_session_get_fn && 
-       ap_session_set_fn)
+    if ((!sent_user || !sent_token) && is_session_cookie_available())
         get_session_auth(r, &sent_user, &sent_token);
 
-    if(sent_user && sent_token) {
+    if (sent_user && sent_token) {
         sent_hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
-        if(totp_parse_authn_token(r, sent_token, &timestamp, &sent_hash)) {
-            
+        if (parse_authn_token(r, sent_token, &timestamp, &sent_hash)) {
+
             totp_timestamp = to_totp_timestamp(timestamp);
-            
+
             /* validate user name */
-            if(!is_alnum_str(sent_user)) {
+            if (!is_alnum_str(sent_user)) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                               "authn_totp_check_authn: user name contains non-alphanumeric characters");
                 return DECLINED;
             }
 
-            totp_config = totp_get_user_config(r, sent_user);
+            totp_config = get_user_config(r, sent_user);
             if (!totp_config) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "authn_totp_check_authn: could not find TOTP configuration for user \"%s\"", sent_user);
+                              "authn_totp_check_authn: could not find TOTP configuration for user \"%s\"",
+                              sent_user);
                 return DECLINED;
             }
 #ifdef DEBUG_TOTP_AUTH
@@ -1220,16 +1269,18 @@ static int authn_totp_check_authn(request_rec * r)
 #endif
             hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
             totp_code =
-                totp_generate_code(totp_timestamp, totp_config->shared_key,
+                generate_totp_code(totp_timestamp, totp_config->shared_key,
                                    totp_config->shared_key_len, &hash);
 
-            if(0 == memcmp(hash, sent_hash, APR_SHA1_DIGESTSIZE)) {
+            if (0 == memcmp(hash, sent_hash, APR_SHA1_DIGESTSIZE)) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "authn_totp_check_authn: access granted to user \"%s\"", sent_user);
+                              "authn_totp_check_authn: access granted to user \"%s\"",
+                              sent_user);
                 return OK;
             } else {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "authn_totp_check_authn: hash mismatch for user \"%s\"", sent_user);
+                              "authn_totp_check_authn: hash mismatch for user \"%s\"",
+                              sent_user);
             }
         }
     }
@@ -1238,20 +1289,20 @@ static int authn_totp_check_authn(request_rec * r)
     return DECLINED;
 }
 
-static int authn_totp_post_config(apr_pool_t *pconf, apr_pool_t *plog,
-                                  apr_pool_t *ptemp, server_rec *s)
+static int
+authn_totp_post_config(apr_pool_t *pconf, apr_pool_t *plog,
+                       apr_pool_t *ptemp, server_rec *s)
 {
 
-    if (!ap_session_load_fn || !ap_session_get_fn || !ap_session_set_fn) {
+    if (!is_session_cookie_available()) {
         ap_session_load_fn = APR_RETRIEVE_OPTIONAL_FN(ap_session_load);
-        ap_session_get_fn  = APR_RETRIEVE_OPTIONAL_FN(ap_session_get);
-        ap_session_set_fn  = APR_RETRIEVE_OPTIONAL_FN(ap_session_set);
+        ap_session_get_fn = APR_RETRIEVE_OPTIONAL_FN(ap_session_get);
+        ap_session_set_fn = APR_RETRIEVE_OPTIONAL_FN(ap_session_set);
 
-        if (!ap_session_load_fn || !ap_session_get_fn || !ap_session_set_fn) {
-            ap_log_error(APLOG_MARK, APLOG_WARNING, 
+        if (!is_session_cookie_available()) {
+            ap_log_error(APLOG_MARK, APLOG_WARNING,
                          0, NULL,
                          "Failed to load mod_session: TOTP authentication will not be persistent");
-            return !OK;
         }
     }
 
@@ -1269,7 +1320,7 @@ register_hooks(apr_pool_t *p)
     ap_hook_check_authn(authn_totp_check_authn, NULL, NULL, APR_HOOK_FIRST,
                         AP_AUTH_INTERNAL_PER_CONF);
 
-    ap_hook_post_config(authn_totp_post_config,NULL,NULL,APR_HOOK_MIDDLE);
+    ap_hook_post_config(authn_totp_post_config, NULL, NULL, APR_HOOK_MIDDLE);
 
     ap_register_auth_provider(p, AUTHN_PROVIDER_GROUP, "totp",
                               AUTHN_PROVIDER_VERSION, &authn_totp_provider,
