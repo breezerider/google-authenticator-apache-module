@@ -432,6 +432,38 @@ generate_totp_code(apr_time_t timestamp, const char *secret,
     return totp_code;
 }
 
+
+/**
+  * \brief generate_totp_code Generate a one time password using shared secret and timestamp
+  * \param timestamp Unix timestamp
+  * \param secret Shared secret key
+  * \param secret_len Length of the secret key
+  * \param hash Pointer to memory location to store the SHA1 hash digest
+  * \return TOTP code as an unsigned integer
+ **/
+static void
+get_data_hash(apr_time_t timestamp, unsigned int totp_code,
+              const char *secret, const apr_size_t secret_len,
+              unsigned char *hash, const apr_size_t hash_len)
+{
+    const apr_size_t challenge_len = sizeof(apr_time_t) + sizeof(unsigned int);
+    unsigned char    challenge_data[challenge_len];
+    int              j;
+
+    for (j = challenge_len; j--; ) {
+        if(j > sizeof(unsigned int)) {
+            challenge_data[j] = timestamp;
+            timestamp >>= 8;
+        } else {
+            challenge_data[j] = totp_code;
+            totp_code >>= 8;
+        }
+    }
+
+    hmac_sha1(secret, secret_len, challenge_data, challenge_len, hash,
+              hash_len);
+}
+
 /**
   * \brief check_n_update_file_helper Update file entries and apend new entry
   * \param r Request
@@ -613,6 +645,8 @@ generate_authn_token(request_rec *r, apr_time_t timestamp, const unsigned char *
     const char     *token;
     const char     *tmp;
 
+    get_data_hash
+
     token =
         apr_pencode_base64_binary(r->pool, hash, APR_SHA1_DIGESTSIZE,
                                   APR_ENCODE_NONE, NULL);
@@ -716,94 +750,12 @@ parse_authn_token(request_rec *r, const char *token,
     return true;
 }
 
-/**
- * Set the auth username and password into the main request
- * notes table.
- */
-static void
-set_notes_auth(request_rec *r, const char *user, const char *password,
-               const char *token)
-{
-    apr_table_t    *notes = NULL;
-    const char     *authname;
-
-    /* find the main request */
-    while (r->main) {
-        r = r->main;
-    }
-    /* find the first redirect */
-    while (r->prev) {
-        r = r->prev;
-    }
-    notes = r->notes;
-
-    authname = ap_auth_name(r);
-    if (user) {
-        apr_table_setn(notes, apr_pstrcat(r->pool, authname, "-user", NULL), user);
-    }
-    if (password) {
-        apr_table_setn(notes, apr_pstrcat(r->pool, authname, "-password", NULL),
-                       password);
-    }
-    if (token) {
-        apr_table_setn(notes, apr_pstrcat(r->pool, authname, "-totp-token", NULL),
-                       token);
-    }
-}
-
-/**
- * Get the auth username and password from the main request
- * notes table, if present.
- */
-static void
-get_notes_auth(request_rec *r, const char **user, const char **password,
-               const char **token)
-{
-    const char     *authname;
-    request_rec    *m = r;
-
-    /* find the main request */
-    while (m->main) {
-        m = m->main;
-    }
-    /* find the first redirect */
-    while (m->prev) {
-        m = m->prev;
-    }
-
-    /* have we isolated the user and pw before? */
-    authname = ap_auth_name(m);
-    if (user) {
-        *user =
-            (char *) apr_table_get(m->notes,
-                                   apr_pstrcat(m->pool, authname, "-user", NULL));
-    }
-    if (password) {
-        *password =
-            (char *) apr_table_get(m->notes,
-                                   apr_pstrcat(m->pool, authname, "-password",
-                                               NULL));
-    }
-    if (token) {
-        *token =
-            (char *) apr_table_get(m->notes,
-                                   apr_pstrcat(m->pool, authname, "-totp-token",
-                                               NULL));
-    }
-
-    /* set the user, even though the user is unauthenticated at this point */
-    if (user && *user) {
-        r->user = (char *) *user;
-    }
-
-    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "get_notes_auth: username \"%s\", password \"%s\", token \"%s\"",
-                  user ? *user : "<null>", password ? *password : "<null>",
-                  token ? *token : "<null>");
-}
-
 /* Session cookie support */
 
+/**
+  * \brief is_session_cookie_available Check if session cookie is available
+  * \return true if all required function have been found, false otherwise
+ **/
 static bool
 is_session_cookie_available()
 {
@@ -1113,14 +1065,11 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 
             if (totp_code == user_code) {
                 if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
-                    token = generate_authn_token(r, timestamp, hash);
-                    tmp = apr_psprintf(r->pool, "%6.6u", user_code);
-                    if (token && tmp) {
-
-                        set_notes_auth(r, user, tmp, token);
-                        if (is_session_cookie_available()) {
+                    if (is_session_cookie_available()) {
+                        token = generate_authn_token(r, timestamp, user_code);
+                        tmp = apr_psprintf(r->pool, "%6.6u", user_code);
+                        if (token && tmp)
                             set_session_auth(r, user, tmp, token);
-                        }
                     }
 
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
@@ -1146,6 +1095,12 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
                 if (mark_code_invalid
                     (r, timestamp, user, totp_config,
                      totp_config->scratch_codes[i])) {
+                    if (is_session_cookie_available()) {
+                        token = generate_authn_token(r, timestamp, user_code);
+                        tmp = apr_psprintf(r->pool, "%8.8u", user_code);
+                        if (token && tmp)
+                            set_session_auth(r, user, tmp, token);
+                    }
 
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                                   "access granted for user \"%s\" based on scratch code \"%8.8u\"",
@@ -1182,6 +1137,10 @@ authn_totp_check_authn(request_rec *r)
     unsigned int    password_len;
     apr_time_t      timestamp, totp_timestamp;
 
+    /* check if session cookie support is available */
+    if(!is_session_cookie_available())
+        return DECLINED;
+
     /* check if authentication realm is set */
     if (!ap_auth_name(r)) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -1189,10 +1148,8 @@ authn_totp_check_authn(request_rec *r)
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    get_notes_auth(r, &sent_user, &sent_password, &sent_token);
-    if ((!sent_user || !sent_password || !sent_token)
-        && is_session_cookie_available())
-        get_session_auth(r, &sent_user, &sent_password, &sent_token);
+    /* get data from session cookie */
+    get_session_auth(r, &sent_user, &sent_password, &sent_token);
 
     if (sent_user && sent_password && sent_token) {
         sent_hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
