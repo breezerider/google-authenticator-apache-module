@@ -1152,76 +1152,6 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
     return AUTH_DENIED;
 }
 
-/* This handles Digest Authentication. Returns a has of the
-   User, Realm and (Required) Password. Caller (Digest module)
-	 determines if the entered password was actually valid
-*/
-static          authn_status
-authn_totp_get_realm_hash(request_rec *r, const char *user, const char *realm,
-                          char **rethash)
-{
-    totp_auth_config_rec *conf =
-        ap_get_module_config(r->per_dir_config, &authn_totp_module);
-
-    totp_user_config *totp_config = NULL;
-    apr_time_t      timestamp = apr_time_now(), totp_timestamp =
-        to_totp_timestamp(timestamp);
-    unsigned int    totp_code;
-    char           *hashstr;
-    char           *pwstr;
-    char            err_char;
-    unsigned char  *hash;
-
-#ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                  "TOTP DIGEST AUTH at timestamp=%" APR_TIME_T_FMT
-                  " user=\"%s\" realm=\"%s\"", timestamp, user, realm);
-#endif
-
-    /* validate user name */
-    err_char = is_alnum_str(user);
-    if (err_char) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "user \"%s\" contains invalid character '%c'", user, err_char);
-        return AUTH_USER_NOT_FOUND;
-    }
-
-    totp_config = get_user_config(r, user);
-    if (!totp_config) {
-#ifdef DEBUG_TOTP_AUTH
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "could not find TOTP configuration for user \"%s\"", user);
-#endif
-        return AUTH_USER_NOT_FOUND;
-    }
-#ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                  "secret key is \"%s\", secret length: %ld",
-                  totp_config->shared_key, totp_config->shared_key_len);
-#endif
-
-    totp_code =
-        generate_totp_code(totp_timestamp, totp_config->shared_key,
-                           totp_config->shared_key_len, NULL);
-
-    pwstr = apr_psprintf(r->pool, "%6.6u", totp_code);
-    hashstr = apr_psprintf(r->pool, "%s:%s:%s", user, realm, pwstr);
-
-#ifdef DEBUG_TOTP_AUTH
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                  "T=%" APR_TIME_T_FMT ", user \"%s\", password \"%s\"",
-                  timestamp, user, pwstr);
-#endif
-
-    hash = apr_palloc(r->pool, APR_MD5_DIGESTSIZE);
-    apr_md5(hash, hashstr, strlen(hashstr));
-    *rethash =
-        apr_pencode_base16_binary(r->pool, hash, APR_MD5_DIGESTSIZE, APR_ENCODE_NONE,
-                                  NULL);
-
-    return AUTH_USER_FOUND;
-}
-
 /**
  * Check user's TOTP authentication token
  */
@@ -1312,7 +1242,7 @@ authn_totp_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 /* Module Declaration */
 
 static const authn_provider authn_totp_provider =
-    { &authn_totp_check_password, &authn_totp_get_realm_hash };
+    { &authn_totp_check_password, NULL };
 
 static void
 register_hooks(apr_pool_t *p)
