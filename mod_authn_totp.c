@@ -171,6 +171,7 @@ hmac_sha1(const unsigned char *key, unsigned int keyLength,
 typedef struct {
     char           *tokenDir;
     char           *stateDir;
+    apr_time_t      expires;
 } totp_auth_config_rec;
 
 static void    *
@@ -179,6 +180,7 @@ create_authn_totp_config(apr_pool_t *p, char *d)
     totp_auth_config_rec *conf = apr_palloc(p, sizeof(*conf));
     conf->tokenDir = NULL;
     conf->stateDir = NULL;
+    conf->expires  = 3600; /* one hour */
 
     return conf;
 }
@@ -188,13 +190,13 @@ set_totp_auth_config_path(cmd_parms *cmd, void *offset, const char *path)
 {
     return ap_set_file_slot(cmd, offset, path);
 }
-/*
+
 static const char *
 set_totp_auth_config_int(cmd_parms *cmd, void *offset, const char *value)
 {
 	return ap_set_int_slot(cmd, offset, value);
 }
-*/
+
 static const command_rec authn_totp_cmds[] = {
     AP_INIT_TAKE1("TOTPAuthTokenDir", set_totp_auth_config_path,
                   (void *) APR_OFFSETOF(totp_auth_config_rec, tokenDir),
@@ -204,6 +206,10 @@ static const command_rec authn_totp_cmds[] = {
                   (void *) APR_OFFSETOF(totp_auth_config_rec, stateDir),
                   OR_AUTHCFG,
                   "Directory that contains TOTP key state information"),
+    AP_INIT_TAKE1("TOTPExpires", set_totp_auth_config_int,
+                  (void *) APR_OFFSETOF(totp_auth_config_rec, expires),
+                  OR_AUTHCFG,
+                  "Expiry time (in seconds) for TOTP authentication token"),
     {NULL}
 };
 
@@ -224,6 +230,7 @@ typedef struct {
 
 typedef struct {
     totp_user_config *conf;
+    apr_time_t      exp;
     unsigned int    res;
 } totp_file_helper_cb_data;
 
@@ -829,7 +836,7 @@ bool
 cb_check_code(const void *new, const void *old, totp_file_helper_cb_data *data)
 {
     if (old) {
-        static const apr_time_t timedelta = 3600000000; /* one hour */
+        const apr_time_t timedelta = apr_time_from_sec(data->exp);
         /* check for an existing login entry with new TOTP code */
         totp_login_rec *pNew = (totp_login_rec *) new;
         totp_login_rec *pOld = (totp_login_rec *) old;
@@ -880,6 +887,7 @@ mark_code_invalid(request_rec *r, apr_time_t timestamp,
 
     /* initialize callback data */
     cb_data.conf = totp_config;
+    cb_data.exp = conf->expires;
     cb_data.res = 0;
 
     /* current login entry */
@@ -910,13 +918,12 @@ cb_rate_limit(const void *new, const void *old, totp_file_helper_cb_data *data)
 
         if (curr > prev) {
             /* check if entry time is within time tolerance */
-            if ((curr - prev) <= data->conf->rate_limit_seconds * 1000000) {
+            if ((curr - prev) <= apr_time_from_sec(data->conf->rate_limit_seconds)) {
                 data->res++;
                 return true;
             }
-        } else {
-            return false;
         }
+        return false;
     } else {
         return true;
     }
