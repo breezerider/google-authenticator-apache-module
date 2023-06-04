@@ -398,14 +398,12 @@ get_user_config(request_rec *r, const char *user)
 /**
   * \brief generate_totp_code Generate a one time password using shared secret and timestamp
   * \param timestamp Unix timestamp
-  * \param secret Shared secret key
-  * \param secret_len Length of the secret key
+  * \param totp_config Pointer to structure containing TOTP configuration
   * \param hash_out Either NULL or a pointer to memory location to store the SHA1 hash digest
   * \return TOTP code as an unsigned integer
  **/
 static unsigned int
-generate_totp_code(apr_time_t timestamp, const char *secret,
-                   apr_size_t secret_len, unsigned char **hash_out)
+generate_totp_code(apr_time_t timestamp, const totp_user_config *totp_config)
 {
     unsigned char   hash[APR_SHA1_DIGESTSIZE];
     const size_t    challenge_size = sizeof(apr_time_t);
@@ -416,10 +414,9 @@ generate_totp_code(apr_time_t timestamp, const char *secret,
     for (j = challenge_size; j--; timestamp >>= 8)
         challenge_data[j] = timestamp;
 
-    hmac_sha1(secret, secret_len, challenge_data, challenge_size, hash,
-              APR_SHA1_DIGESTSIZE);
-    if (hash_out)
-        memcpy(*hash_out, hash, APR_SHA1_DIGESTSIZE);
+    hmac_sha1(totp_config->shared_key,
+              totp_config->shared_key_len,
+              challenge_data, challenge_size, hash, APR_SHA1_DIGESTSIZE);
     offset = hash[APR_SHA1_DIGESTSIZE - 1] & 0xF;
     for (j = 0; j < 4; ++j) {
         totp_code <<= 8;
@@ -430,38 +427,6 @@ generate_totp_code(apr_time_t timestamp, const char *secret,
     totp_code %= 1000000;
 
     return totp_code;
-}
-
-
-/**
-  * \brief generate_totp_code Generate a one time password using shared secret and timestamp
-  * \param timestamp Unix timestamp
-  * \param secret Shared secret key
-  * \param secret_len Length of the secret key
-  * \param hash Pointer to memory location to store the SHA1 hash digest
-  * \return TOTP code as an unsigned integer
- **/
-static void
-get_data_hash(apr_time_t timestamp, unsigned int totp_code,
-              const char *secret, const apr_size_t secret_len,
-              unsigned char *hash, const apr_size_t hash_len)
-{
-    const apr_size_t challenge_len = sizeof(apr_time_t) + sizeof(unsigned int);
-    unsigned char    challenge_data[challenge_len];
-    int              j;
-
-    for (j = challenge_len; j--; ) {
-        if(j > sizeof(unsigned int)) {
-            challenge_data[j] = timestamp;
-            timestamp >>= 8;
-        } else {
-            challenge_data[j] = totp_code;
-            totp_code >>= 8;
-        }
-    }
-
-    hmac_sha1(secret, secret_len, challenge_data, challenge_len, hash,
-              hash_len);
 }
 
 /**
@@ -629,23 +594,49 @@ check_n_update_file_helper(request_rec *r, const char *filepath,
     return APR_SUCCESS;
 }
 
-/* Authentication Helpers: Notes Auth */
+/* Authentication Helpers: Toekn Authentication */
+
+/**
+  * \brief generate_token_hash Generate token hash from TOTP password and timestamp
+  * \param timestamp Unix timestamp
+  * \param totp_code TOTP code
+  * \param totp_config Pointer to structure containing TOTP configuration
+  * \return Pointer to memory location that contains the SHA1 hash digest
+ **/
+static unsigned char *
+generate_token_hash(apr_pool_t *pool, apr_time_t timestamp, unsigned int totp_code,
+                    const totp_user_config *totp_config)
+{
+    const apr_size_t challenge_len = sizeof(apr_time_t) + sizeof(unsigned int);
+    unsigned char   challenge_data[challenge_len];
+    unsigned char  *hash = apr_palloc(pool, APR_SHA1_DIGESTSIZE);
+
+    memcpy(challenge_data, &totp_code, sizeof(unsigned int));
+    memcpy(challenge_data + sizeof(unsigned int), &timestamp, sizeof(apr_time_t));
+
+    hmac_sha1(totp_config->shared_key,
+              totp_config->shared_key_len,
+              challenge_data, challenge_len, hash, APR_SHA1_DIGESTSIZE);
+
+    return hash;
+}
 
 /**
   * \brief generate_authn_token Generate an authentication token
   * \param r Request
   * \param timestamp Unix timestamp
-  * \param hash Pointer to the corresponding SHA1 hash digest
+  * \param totp_code TOTP code
   * \return Pointer to string containing the authentication token on success, NULL otherwise
  **/
 static const char *
-generate_authn_token(request_rec *r, apr_time_t timestamp, const unsigned char *hash)
+generate_authn_token(request_rec *r, apr_time_t timestamp, unsigned int totp_code,
+                     const totp_user_config *totp_config)
 {
     const char     *challenge;
     const char     *token;
-    const char     *tmp;
+    const char     *hash;
 
-    get_data_hash
+    hash = generate_token_hash(r->pool, timestamp, totp_code, totp_config);
 
     token =
         apr_pencode_base64_binary(r->pool, hash, APR_SHA1_DIGESTSIZE,
@@ -656,12 +647,10 @@ generate_authn_token(request_rec *r, apr_time_t timestamp, const unsigned char *
 
     token = apr_pstrcat(r->pool, challenge, ".", token, NULL);
 
-    tmp =
-        apr_pencode_base16_binary(r->pool, hash, APR_SHA1_DIGESTSIZE,
-                                  APR_ENCODE_COLON, NULL);
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                   "generate_authn_token: time %" APR_TIME_T_FMT
-                  ", hash \"%s\" -> token \"%s\"", timestamp, tmp, token);
+                  ", TOTP code \"%6.6u\" -> token \"%s\"",
+                  timestamp, totp_code, token);
 
     return token;
 }
@@ -993,10 +982,8 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
     unsigned int    password_len = strlen(password);
     apr_time_t      timestamp = apr_time_now();
     apr_time_t      totp_timestamp = to_totp_timestamp(timestamp);
-    unsigned char  *hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
     const char     *token, *tmp;
-    unsigned int    totp_code = 0;
-    unsigned int    user_code;
+    unsigned int    totp_code = 0, user_code = 0;
     int             i;
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
@@ -1046,17 +1033,12 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
         return AUTH_DENIED;
     }
 */
-                                /***
-	 *** Perform TOTP Authentication
-	 ***/
+    /* TOTP Authentication */
     user_code = (unsigned int) apr_atoi64(password);
     /* TOTP codes */
     if (password_len == 6) {
         for (i = -(totp_config->window_size); i <= (totp_config->window_size); ++i) {
-            totp_code =
-                generate_totp_code(totp_timestamp + i,
-                                   totp_config->shared_key,
-                                   totp_config->shared_key_len, &hash);
+            totp_code = generate_totp_code(totp_timestamp + i, totp_config);
 
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                           "validating code timestamp=%" APR_TIME_T_FMT
@@ -1064,9 +1046,11 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
                           totp_code, user_code);
 
             if (totp_code == user_code) {
-                if (mark_code_invalid(r, timestamp, user, totp_config, totp_code)) {
+                if (mark_code_invalid(r, timestamp, user, totp_config, user_code)) {
                     if (is_session_cookie_available()) {
-                        token = generate_authn_token(r, timestamp, user_code);
+                        token =
+                            generate_authn_token(r, timestamp, user_code,
+                                                 totp_config);
                         tmp = apr_psprintf(r->pool, "%6.6u", user_code);
                         if (token && tmp)
                             set_session_auth(r, user, tmp, token);
@@ -1092,11 +1076,11 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
                           totp_config->scratch_codes[i], user_code);
 
             if (totp_config->scratch_codes[i] == user_code) {
-                if (mark_code_invalid
-                    (r, timestamp, user, totp_config,
-                     totp_config->scratch_codes[i])) {
+                if (mark_code_invalid(r, timestamp, user, totp_config, user_code)) {
                     if (is_session_cookie_available()) {
-                        token = generate_authn_token(r, timestamp, user_code);
+                        token =
+                            generate_authn_token(r, timestamp, user_code,
+                                                 totp_config);
                         tmp = apr_psprintf(r->pool, "%8.8u", user_code);
                         if (token && tmp)
                             set_session_auth(r, user, tmp, token);
@@ -1130,15 +1114,15 @@ authn_totp_check_authn(request_rec *r)
         ap_get_module_config(r->per_dir_config, &authn_totp_module);
 
     totp_user_config *totp_config = NULL;
-    const char     *sent_user  = NULL, *sent_password = NULL,
+    const char     *sent_user = NULL, *sent_password = NULL,
                    *sent_token = NULL, *tmp;
     unsigned char  *hash, *sent_hash;
-    unsigned int    totp_code, sent_totp_code;
+    unsigned int    sent_totp_code;
     unsigned int    password_len;
-    apr_time_t      timestamp, totp_timestamp;
+    apr_time_t      sent_timestamp;
 
     /* check if session cookie support is available */
-    if(!is_session_cookie_available())
+    if (!is_session_cookie_available())
         return DECLINED;
 
     /* check if authentication realm is set */
@@ -1153,9 +1137,7 @@ authn_totp_check_authn(request_rec *r)
 
     if (sent_user && sent_password && sent_token) {
         sent_hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
-        if (parse_authn_token(r, sent_token, &timestamp, &sent_hash)) {
-
-            totp_timestamp = to_totp_timestamp(timestamp);
+        if (parse_authn_token(r, sent_token, &sent_timestamp, &sent_hash)) {
 
             /* validate username */
             if (!is_alnum_str(sent_user)) {
@@ -1200,13 +1182,11 @@ authn_totp_check_authn(request_rec *r)
             sent_totp_code = (unsigned int) apr_atoi64(sent_password);
 
             /* generate expected TOTP code */
-            hash = apr_palloc(r->pool, APR_SHA1_DIGESTSIZE);
-            totp_code =
-                generate_totp_code(totp_timestamp, totp_config->shared_key,
-                                   totp_config->shared_key_len, &hash);
+            hash =
+                generate_token_hash(r->pool, sent_timestamp, sent_totp_code,
+                                    totp_config);
 
-            if ((totp_code == sent_totp_code) &&
-                (0 == memcmp(hash, sent_hash, APR_SHA1_DIGESTSIZE))) {
+            if (0 == memcmp(hash, sent_hash, APR_SHA1_DIGESTSIZE)) {
                 /* TODO check login file */
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                               "authn_totp_check_authn: access granted to user \"%s\"",
