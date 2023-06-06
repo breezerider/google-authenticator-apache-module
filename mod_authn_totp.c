@@ -1112,12 +1112,12 @@ authn_totp_check_password(request_rec *r, const char *user, const char *password
 #endif
 
     /* check if user login count is within the rate limit */
-/*    if (!check_rate_limit(r, timestamp, user, totp_config)) {
+    if (!check_rate_limit(r, timestamp, user, totp_config)) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "login attemp for user \"%s\" exceeds rate limit", user);
         return AUTH_DENIED;
     }
-*/
+
     /* TOTP Authentication */
     user_code = (unsigned int) apr_atoi64(password);
     /* TOTP codes */
