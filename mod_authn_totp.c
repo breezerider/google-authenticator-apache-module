@@ -907,6 +907,84 @@ mark_code_invalid(request_rec *r, apr_time_t timestamp,
     return (cb_data.res == 0);
 }
 
+/* Authentication Helpers: Validate TOTP login */
+
+bool
+cb_verify_code(const void *new, const void *old, totp_file_helper_cb_data *data)
+{
+    if (old) {
+        const apr_time_t timedelta = apr_time_from_sec(data->exp);
+        /* check for an existing login entry with new TOTP code */
+        totp_login_rec *pNew = (totp_login_rec *) new;
+        totp_login_rec *pOld = (totp_login_rec *) old;
+
+        /* check if entry time is within time tolerance */
+        if ((pNew->timestamp - pOld->timestamp) <= timedelta) {
+            /* check if entry code matches current one */
+            if ((pOld->timestamp == pNew->timestamp) &&
+                (pOld->totp_code == pNew->totp_code))
+                data->res++;
+            return true;
+        }
+        return false;
+    } else {
+        /* should new entry be appended to the file? */
+        return false;
+    }
+}
+
+/**
+  * \brief verify_totp_code Verify TOTP login data
+  * \param r Request
+  * \param timestamp Timestamp for login event
+  * \param user Authenticating user name
+  * \param totp_config Pointer to user's TOTP authentication settings
+  * \param totp_code Authenticating TOTP code
+  * \return true upon success, false otherwise
+ **/
+static bool
+verify_totp_code(request_rec *r, apr_time_t timestamp,
+                  const char *user, totp_user_config *totp_config,
+                  unsigned int totp_code)
+{
+    totp_auth_config_rec *conf =
+        ap_get_module_config(r->per_dir_config, &authn_totp_module);
+    char           *code_filepath;
+    totp_login_rec  login_data;
+    apr_status_t    status;
+    totp_file_helper_cb_data cb_data;
+
+    if (!conf->stateDir) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+                      "verify_totp_code: TOTPAuthStateDir is not defined");
+        return false;
+    }
+
+    /* set code file path */
+    code_filepath = apr_psprintf(r->pool, "%s/%s.codes", conf->stateDir, user);
+
+    /* initialize callback data */
+    cb_data.conf = totp_config;
+    cb_data.exp = conf->expires;
+    cb_data.res = 0;
+
+    /* current login entry */
+    login_data.timestamp = timestamp;
+    login_data.totp_code = totp_code;
+
+    status = check_n_update_file_helper(r, code_filepath,
+                                        &login_data, sizeof(totp_login_rec),
+                                        cb_verify_code, &cb_data);
+    if (APR_SUCCESS != status) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
+                      "verify_totp_code: could not update codes file \"%s\"",
+                      code_filepath);
+        return false;
+    }
+
+    return (cb_data.res == 1);
+}
+
 /* Authentication Helpers: Rate Limiting User Logins */
 
 bool
@@ -1194,11 +1272,15 @@ authn_totp_check_authn(request_rec *r)
                                     totp_config);
 
             if (0 == memcmp(hash, sent_hash, APR_SHA1_DIGESTSIZE)) {
-                /* TODO check login file */
+                if(verify_totp_code(r, sent_timestamp, sent_user, totp_config, sent_totp_code)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                                "authn_totp_check_authn: access granted to user \"%s\"",
+                                sent_user);
+                    return OK;
+                }
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                              "authn_totp_check_authn: access granted to user \"%s\"",
+                              "authn_totp_check_authn: TOTP verification failed user \"%s\"",
                               sent_user);
-                return OK;
             } else {
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                               "authn_totp_check_authn: hash mismatch for user \"%s\"",
