@@ -34,7 +34,7 @@ make
 make install
 ```
 
-4. Extend you existing site configuration with setting for basic or digest authetication:
+4. Extend you existing site configuration with setting for basic authentication:
 
 ```
 <VirtualHost ...>
@@ -77,8 +77,13 @@ apachectl restart
 
 ## Troubleshooting
 
-Obviously, check your Apache log file. One very important thing is to make sure you have proper time synchronization. Use of a service such as NTP is highly recommended. Using a larger window of concurrently valid codes can help compensate for slop in time sync.
+Obviously, check your Apache log file. To get verbose logs comile with `DEBUG_TOTP_AUTH` add this to your site configuration:
 
+```
+LogLevel authn_totp_module:debug
+```
+
+One very important thing is to make sure you have proper time synchronization. Use of a service such as NTP is highly recommended. Using a larger window of concurrently valid codes can help compensate for slop in time sync.
 
 ## License
 
